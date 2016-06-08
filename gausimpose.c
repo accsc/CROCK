@@ -4,7 +4,7 @@
  *	@brief Main file of CROCK tool
  *
  *	@author Alvaro Cortes Cabrera <alvarocortesc@gmail.com>
- *	@date 08/02/2016
+ *	@date 31/05/2016
  *
  * 	This program is free software; you can redistribute it and/or modify
  * 	it under the terms of the GNU General Public License as published by
@@ -17,8 +17,24 @@
  *
  */
 
+#define _CROCK_VERSION "rev6/Jun2015"
+
 
 /**
+        Rev 6 - June 2016
+ 
+          MOL2 input format support (default now, no more PDB)
+	  Output best n superimpositions and complete score list
+	  Faster ring recognition - no redundant search 
+          Revamped options
+	  Fixed and completed color force field: 
+             More Mills-like. r=0.7 with TanimotoColor from ROCS 3.2
+             Implemented: Rings, hydrophobic (partially), anion and cation (all explicitly)
+          TO DO next release:
+	   Pockets from cGRILL are broken currently
+           All conformers are dumped as independent molecules (get best only) 
+           OpenMP implementation of the main conformers loop
+
         Rev 5 - December 2015
 
 	  Support to read pockets from cGRILL
@@ -48,6 +64,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <getopt.h>
 
 /* Read/Write compressed grids */
 #include <zlib.h>
@@ -63,6 +80,8 @@
 #include <simplex.c>
 /* ElectroShape module */
 #include <usr.c>
+/* Charged groups detection */
+#include <groups_chg.c>
 
 #define DEFAULT_MIN_ES_SHAPE 0.0
 
@@ -95,7 +114,14 @@ void progress_bar(int n, int total)
 	fprintf(stderr,"\r");
 }
 
-
+int compare_scores ( const void *a, const void *b ) {
+    const float *a1 = *(const float **)a;
+    const float *b1 = *(const float **)b;
+    if(a1[0] < b1[0])
+        return 1;
+    else
+        return -1;
+}
 
 /**
  *	@brief Main function
@@ -110,6 +136,8 @@ char *argv[];
 	float tanimoto = 0.0f, aa = 0.0f, bb=0.0f, ab=0.0f;
 	float tanimoto_color = 0.0f, aa_color = 0.0f, bb_color = 0.0f, ab_color = 0.0f;
 	MOL2 *lig_a = NULL, *lig_b = NULL;
+	MOL2 **database = NULL, **templates = NULL;
+	int ndb = 0, nrefs = 0;
 	float force[3], torque[3];
 
 	int i = 0, j = 0, bestani = -1, l = 0, k = 0, ll = 0;
@@ -120,13 +148,15 @@ char *argv[];
         double d[3];
         double c[9], v[9];
 	float rot_mat[3][3], rot_inv[3][3], Xrot = 0.0f, Yrot = 0.0f, Zrot = 0.0f, com2[3];
-	float *x = NULL, *y = NULL, *z = NULL;
+	float **x = NULL, **y = NULL, **z = NULL;
         float *xd = NULL, *yd = NULL, *zd = NULL;
-
-	int min_flag = 0;
+	float **scores_list = NULL, tmp_es = 0;
+	char date_text[1024];
+	time_t now;
+	struct tm *t;
+	char tmp_comment[1024];
 
         float simplex[7][7];
-        double *energies = NULL;
         double *simplex_energies = NULL;
         int real_lig_atoms = 0;
         double initial_energy = 0.0;
@@ -145,9 +175,9 @@ char *argv[];
 	float spacing = 0.5f, min_grid[3], max_grid[3];
 	float point[3], min_x = 9999.9f, min_y = 9999.9f, min_z = 9999.9f;
 	float max_x = -9999.9f, max_y = -9999.9f, max_z = -9999.9f;
-	int *types = NULL, **types2 = NULL;
+	int *types = NULL, **types2 = NULL, **types1 = NULL;
         static char *output_grids_names[12] = {"g1.grd","g2.grd","g3.grd","g4.grd","g5.grd","g6.grd","g7.grd","g8.grd","g9.grd","g10.grd","g11.grd","g12.grd"};
-        static char *output_names[12] = {"C_vol.dx","O_vol.dx","N_vol.dx","P_vol.dx","S_vol.dx","F_vol.dx","OH_color.dx","Nitro_color.dx","Apolar_color.dx","N_color.dx","O_color.dx","ring_color.dx"};
+        static char *output_names[12] = {"C_vol.dx","O_vol.dx","N_vol.dx","P_vol.dx","S_vol.dx","F_vol.dx","donor_color.dx","acceptor_color.dx","cation_color.dx","anion_color.dx","hydrophobic_color.dx","ring_color.dx"};
 
         gzFile *output_grids[12];
         char number[9];
@@ -163,31 +193,199 @@ char *argv[];
 	float max_distance = 0.0f;
 	float distance_cutoff = 0.0f;
 
+	/* Option flags */
+	char *ref_filename = NULL;
+	char *db_filename = NULL;
+	char *output_filename = NULL, *output_base = NULL, *output_listname = NULL;
+	FILE *output = NULL, *output_list = NULL;
+	int print_frame = 0;
+	int force_grids = 0;
+        static int verbose_flag = 1;
+        int min_flag = 0;
+	int print_dx = 0;
+	char c_arg = 0;
+	int max_output = 0;
 
 	advertise();
+
+	/* Parse commnad line options */
+        while (1) {
+                static struct option long_options[] =
+                {
+                        { "verbose",     no_argument,         &verbose_flag,       1   },
+                        { "brief",       no_argument,         &verbose_flag,       0   },
+                        { "ref",         required_argument,   0,                   'r' },
+                        { "database",    required_argument,   0,                   'd' },
+                        { "output",      required_argument,   0,                   'o' },
+                        { "max_output",  required_argument,   0,                   'm' },
+                        { "es_threshold",required_argument,   0,                   't' },
+                        { "simplex",     no_argument,         0,                   's' },
+                        { "bfgs",        no_argument,         0,                   'b' },
+                        { "force",       no_argument,         0,                   'f' },
+                        { "dx",          no_argument,         0,                   'x' },
+                        { "frame",       no_argument,         0,                   'w' },
+                        { 0,             0,                   0,                   0   }
+                };
+                int option_index = 0;
+
+                c_arg = getopt_long(argc, argv, "r:d:sbfxwo:t:m:",
+                                long_options, &option_index);
+                if (c_arg == -1)
+                        break;
+
+                switch (c_arg) {
+                case 0:
+                        /* If this option set a flag, do nothing else now. */
+                        if (long_options[option_index].flag != 0)
+                                break;
+                        printf("option %s", long_options[option_index].name);
+                        if (optarg)
+                                printf(" with arg %s", optarg);
+                        printf("\n");
+                        break;
+
+                case 'r':
+			ref_filename = optarg;
+			break;
+		case 'd':
+                        db_filename = optarg;
+                        break;
+
+                case 'o':
+                        output_base = optarg;
+                        break;
+
+                case 'm':
+                        max_output = atoi(optarg);
+                        break;
+
+		case 't':
+			distance_cutoff = atof(optarg);
+			break;
+		case 'b':
+			min_flag = 1;
+			break;
+
+                case 's':
+                        min_flag = 0;
+                        break;
+
+                case 'f':
+                        force_grids = 1;
+                        break;
+
+                case 'w':
+                        print_frame = 1;
+                        break;
+
+                case 'x':
+                        print_dx = 1;
+                        break;
+
+                case '?':
+                        /* getopt_long already printed an error message. */
+                        break;
+
+                default:
+                        abort();
+                }
+        }
+
+
 
         srand(time(0));
 
 	com[0] = com[1] = com[2] = 0.0f;
 
-        if( argc < 3)
+        if( output_base == NULL || ref_filename == NULL || db_filename == NULL)
         {
-		fprintf(stderr,"Usage: %s template.pdb candidate.pdb <min type>\n",argv[0]);
-		fprintf(stderr,"\ttemplate.pdb -> Rigid molecule\n");
-		fprintf(stderr,"\tcandidate.pdb -> Molecule to superimpose\n");
-		fprintf(stderr,"\tMin type -> *Optional*. 0 for Nelder–Mead (Default). 1 for BFGS\n\n");
+		fprintf(stderr,"Usage: %s <params>\n",argv[0]);
+		fprintf(stderr,"\t-r or --ref template.pdb -> Rigid molecule\n");
+		fprintf(stderr,"\t-d or --database candidate.mol2 -> Molecule/database to superimpose\n");
+		fprintf(stderr,"\t-o or --output <base for file names> -> Results\n");
+		fprintf(stderr,"\t-b or --bfgs BFGS optimization\n");
+		fprintf(stderr,"\t-s or --simplex Nelder–Mead optimization (Default)\n");
+		fprintf(stderr,"\t-w or --frame Print also frame reference and candidate for visualization\n");
+		fprintf(stderr,"\t-x or --dx Print grids in dx format for visualization\n");
+		fprintf(stderr,"\t-f or --force Re-calculate grids even if they exists\n\n");
+		fprintf(stderr,"\t-t or --es_threshold <number> minimum ElectroShape threshold to compute overlap\n\n");
 		exit(-1);
         }
 
 
-        PDB_reader(&lig_a, argv[1], 0);
-        PDB_reader(&lig_b, argv[2], 0);
+	if( (output_filename = (char *) calloc(sizeof(char),strlen(output_base)+6)) == NULL)
+	{
+		fprintf(stderr,"Error allocating memory. Output base name is too long.\n");
+		fflush(stderr);
+		exit(-1);
+	}
 
-
-
-        for( i = 0; i < lig_b->nconformers; i++)
+        if( (output_listname = (char *) calloc(sizeof(char),strlen(output_base)+5)) == NULL)
         {
-                set_default_conformer(&lig_b, i);
+                fprintf(stderr,"Error allocating memory. Output base name is too long.\n");
+                fflush(stderr);
+                exit(-1);
+        }
+
+
+	sprintf(output_filename,"%s.mol2",output_base);
+	sprintf(output_listname,"%s.txt",output_base);
+
+	if( access( output_filename, F_OK) != -1 || access( output_listname, F_OK) != -1)
+	{
+		fprintf(stderr,"Output files %s exists. Cannot overwrite\n",output_base);
+		fflush(stderr);
+		exit(-1);
+	}
+
+	if( (output = fopen(output_filename,"wb")) == NULL)
+	{
+		fprintf(stderr,"Cannot open output file %s for writing\n",output_filename);
+		fflush(stderr);
+		exit(-1);
+	}
+
+        if( (output_list = fopen(output_listname,"wb")) == NULL)
+        {
+                fprintf(stderr,"Cannot open output file %s for writing\n",output_listname);
+                fflush(stderr);
+                exit(-1);
+        }
+
+/*        PDB_reader(&lig_a, ref_filename, 0);*/
+	nrefs = MultiMOL2_reader(&templates, ref_filename);
+	if( nrefs > 1)
+	{
+		fprintf(stderr,"More than 1 molecule in the reference file. Only using first.\n");
+		fflush(stderr);
+	}
+	if( nrefs <= 0)
+	{
+		fprintf(stderr,"Reference molecule is empty.\n");
+		fflush(stderr);
+		exit(-1);
+	}
+
+	lig_a = templates[0];
+	fprintf(stderr,"Loading MOL2 database ... ");
+	fflush(stderr);
+	ndb = MultiMOL2_reader(&database, db_filename);
+	fprintf(stderr, " done. %i molecules\n",ndb);
+        fflush(stderr);
+
+
+	if( ndb <= 0)
+	{
+		fprintf(stderr,"Empty database.\n");
+		fflush(stderr);
+		exit(-1);
+	}
+/*        PDB_reader(&lig_b, db_filename, 0);*/
+
+
+        for( i = 0; i < ndb; i++)
+        {
+		lig_b = database[i];
                 current_dist = USR_compare_molecules(lig_a, lig_b);
                 if( current_dist > max_distance)
                 {
@@ -195,12 +393,16 @@ char *argv[];
                 }
         }
 
-	distance_cutoff = DEFAULT_MIN_ES_SHAPE;
+
+	if (max_output == 0)
+		max_output = ndb;
+
+/*	distance_cutoff = DEFAULT_MIN_ES_SHAPE;*/
 
 	if( max_distance < distance_cutoff)
 	{
+/*	        cleanup(&lig_b);*/
 	        cleanup(&lig_a);
-	        cleanup(&lig_b);
 		fprintf(stderr,"All solutions are below the ElectroShape distance cutoff\n");
 		fprintf(stderr,"Best distance: %f < %f\n",max_distance,distance_cutoff);
 		exit(0);
@@ -209,78 +411,12 @@ char *argv[];
 	fprintf(stderr,"ElectroShape filter best distance: %f\n",max_distance);
 
 
-	if( argc > 3)
-	{
-	 min_flag = atoi(argv[3]);
-	}
-
 	if( min_flag == 0)
 	{
 		fprintf(stderr,"\nNelder–Mead optimization selected\n");
 	}else{
                 fprintf(stderr,"\nBroyden–Fletcher–Goldfarb–Shanno optimization selected\n");
 	}
-
-	types = (int *) calloc(sizeof(int),lig_b->n_atoms);
-        types2 = (int **) calloc(sizeof(int *),lig_b->n_atoms);
-
-        for( i = 0; i < lig_b->n_atoms; i++)
-        {
-		types2[i] = (int *) calloc(sizeof(int),6);
-	}
-
-	for( i = 0; i < lig_b->n_atoms; i++)
-	{
-		types[i] = -1;
-		if( lig_b->atoms[i] == 1)
-		 types[i] = 0;
-                else if( lig_b->atoms[i] == 2)
-                 types[i] = 1;
-                else if( lig_b->atoms[i] == 3)
-                 types[i] = 2;
-                else if( lig_b->atoms[i] == 4)
-                 types[i] = -1;
-                else if( lig_b->atoms[i] == 5)
-                 types[i] = 3;
-                else if( lig_b->atoms[i] == 6)
-                 types[i] = 4;
-                else if( lig_b->atoms[i] == 10)
-                 types[i] = 5;
-                else 
-                 types[i] = 0;
-
-	}
-
-        for( i = 0; i < lig_b->n_atoms; i++)
-        {
-                        if( lig_b->atoms[i] == 3 && lig_b->aromatic[i] != 0 &&  get_bonds_p(lig_b,i+1,0) > 2 && has_hydrogens(lig_b,i) == 0 && lig_b->ringer[i] > 0)
-                        {
-/*                              fprintf(stderr,"Got a aromatic cation for a: %i. %i %i %i %i %i\n",i,a->atoms[i],a->aromatic[i],get_bonds_p(a,i+1,0),a->ringer[i],has_hydrogens(a,i));*/
-                                types2[i][3] = 1;
-                        }
-
-                        if( lig_b->gaff_types[i] == OH || lig_b->gaff_types[i] == OW || ( lig_b->atoms[i] == 3 && has_hydrogens(lig_b,i) > 0))
-                        {
-                                        types2[i][0] = 1;
-                        }
-
-                        if( lig_b->gaff_types[i] == O || lig_b->gaff_types[i] == OH || ( lig_b->atoms[i] == 3 && has_hydrogens(lig_b,i) == 0))
-                        {
-                                if( gaus_is_carboxylate(lig_b,i) < 4)
-                                {
-                                        types2[i][4] = 1;
-                                }else
-                                        types2[i][1] = 1;
-                        }
-
-                        if( lig_b->ringer[i] > 0)
-                        {
-                                types2[i][5] = 1;
-                        }
-
-        }
-
-
 
         simplex_energies = (double*)calloc( sizeof(double ), 6 + 1);
         delta_simplex = 0.1;
@@ -289,17 +425,6 @@ char *argv[];
 
         translation_step *= 0.5;
         rotation_step *= 0.5;
-
-
-	/* Final-best coordinates */
-	x = (float *) calloc(sizeof(float),lig_b->n_atoms);
-        y = (float *) calloc(sizeof(float),lig_b->n_atoms);
-        z = (float *) calloc(sizeof(float),lig_b->n_atoms);
-
-	/* Backup coordinates for rotation pi around three axes */
-        xd = (float *) calloc(sizeof(float),lig_b->n_atoms);
-        yd = (float *) calloc(sizeof(float),lig_b->n_atoms);
-        zd = (float *) calloc(sizeof(float),lig_b->n_atoms);
 
 	/* Remove COM from template */
 	for( i = 0; i < lig_a->n_atoms; i++)
@@ -411,14 +536,29 @@ char *argv[];
          lig_a->z[i] = Zrot;
         }
 
-	printf("MODEL 1\n");
- 	dump_pdb_conservative(lig_a);
-	printf("ENDMDL\n");
+	if( print_frame == 1)
+	{
+/*		fprintf(output,"MODEL 0\n");
+		fprintf(output,"REMARK Template\n");*/
+                dump_mol2_to_file(lig_a,output);
+/*	 	dump_pdb_conservative_to_file(lig_a,output);*/
+/*		fprintf(output,"ENDMDL\n");*/
+	}
+
+
+	types1 = (int **) calloc(sizeof(int *),lig_a->n_atoms);
+	
+	for( i = 0; i < lig_a->n_atoms; i++)
+	{
+	        types1[i] = (int *) calloc(sizeof(int),6);
+	}
+
+        detect_groups_heruistic(lig_a, &types1);
 
 	/* Get self-overlap for template */
         aa = -get_volumen_intersection(lig_a,&lig_a,0,0);
         /* Get self-overlap-color for template */
-	aa_color = -get_color_intersection(lig_a,&lig_a,0,0);
+	aa_color = -get_color_intersection(lig_a,&lig_a,types1,types1,0,0);
 
 	
 	min_x = max_x = lig_a->x[0];
@@ -488,7 +628,7 @@ char *argv[];
         fflush(stderr);
 
 
-	if( access( "g1.grd", F_OK) == -1 )
+	if( access( "g1.grd", F_OK) == -1 || force_grids == 1 )
 	{
 
         for( i = 0 ; i < x_points; ++i)
@@ -516,17 +656,17 @@ char *argv[];
                                 grids[5][i][j][k] = get_volumen_intersection_at_point(lig_a, 
 							point[0], point[1], point[2], 10,0);
 
-				grids[6][i][j][k] = get_color_intersection_at_point(lig_a,
+				grids[6][i][j][k] = get_color_intersection_at_point(lig_a,types1,
 							point[0], point[1], point[2],0,0);
-                                grids[7][i][j][k] = get_color_intersection_at_point(lig_a, 
+                                grids[7][i][j][k] = get_color_intersection_at_point(lig_a,types1,
                                                         point[0], point[1], point[2],1,0);
-                                grids[8][i][j][k] = get_color_intersection_at_point(lig_a, 
+                                grids[8][i][j][k] = get_color_intersection_at_point(lig_a,types1,
                                                         point[0], point[1], point[2],2,0);
-                                grids[9][i][j][k] = get_color_intersection_at_point(lig_a, 
+                                grids[9][i][j][k] = get_color_intersection_at_point(lig_a,types1,
                                                         point[0], point[1], point[2],3,0);
-                                grids[10][i][j][k] = get_color_intersection_at_point(lig_a, 
+                                grids[10][i][j][k] = get_color_intersection_at_point(lig_a,types1,
                                                         point[0], point[1], point[2],4,0);
-                                grids[11][i][j][k] = get_color_intersection_at_point(lig_a, 
+                                grids[11][i][j][k] = get_color_intersection_at_point(lig_a,types1,
                                                         point[0], point[1], point[2],5,0);
 
 
@@ -581,6 +721,9 @@ char *argv[];
 	        gzclose(output_grids[l]);
 
 
+		if( print_dx == 0)
+			continue;
+
 	        if( (output_dx = fopen(output_names[l],"w")) == NULL)
 	        {
 	                fprintf(stderr,"ERROR-MAIN%i: Cannot open grid file to write.\n\n",__LINE__);
@@ -626,313 +769,402 @@ char *argv[];
 
 	}else{ /* I found some grids here */
 
-        fprintf(stderr, "Reading grids ...");
-        fflush(stderr);
+	        fprintf(stderr, "Reading grids ...");
+	        fflush(stderr);
 
-        for ( l = 0; l < 12; ++l) {
-                if ( (output_grids[l] = gzopen(output_grids_names[l], "rb")) == NULL) {
-                        fprintf(stderr, "Could not open the grid files.\n");
-                        fflush(stderr);
-                        return -1;
-                }
+	        for ( l = 0; l < 12; ++l) {
+	                if ( (output_grids[l] = gzopen(output_grids_names[l], "rb")) == NULL) {
+	                        fprintf(stderr, "Could not open the grid files.\n");
+	                        fflush(stderr);
+	                        return -1;
+	                }
 
-                buffer = (char*)calloc(1024, sizeof(char));
-                gzgets(output_grids[l], buffer, MAX_BUFFER);
+	                buffer = (char*)calloc(1024, sizeof(char));
+	                gzgets(output_grids[l], buffer, MAX_BUFFER);
 
-                sscanf(buffer, "%s %i %i %i %f %f %f %f", keyword, &x_points, &y_points, &z_points, &spacing, &min_grid[0], &min_grid[1], &min_grid[2]);
-                free(buffer);
+	                sscanf(buffer, "%s %i %i %i %f %f %f %f", keyword, &x_points, &y_points, &z_points, &spacing, &min_grid[0], &min_grid[1], &min_grid[2]);
+	                free(buffer);
+	
+	                max_grid[0] = min_grid[0] + (spacing * x_points);
+	                max_grid[1] = min_grid[1] + (spacing * y_points);
+	                max_grid[2] = min_grid[2] + (spacing * z_points);
 
-                max_grid[0] = min_grid[0] + (spacing * x_points);
-                max_grid[1] = min_grid[1] + (spacing * y_points);
-                max_grid[2] = min_grid[2] + (spacing * z_points);
+	                if ( !(strstr(keyword, "GAUS") > 0)) {
+	                        printf("Keyword fail. Corruption in file.\n");
+	                        return -1;
+	                }
+	                for ( i = 0; i < x_points; ++i) {
+	                        for ( j = 0; j < y_points; ++j) {
+	                                for ( k = 0; k < z_points; ++k) {
+	                                        grids[l][i][j][k] = 0.0f;
+	                                        gzread( output_grids[l], number, 8 );
+	                                        grids[l][i][j][k] = atof(number);
+	
+	                                }
+	                        }
+	
+	                }
+	
+	                gzclose(output_grids[l]);
 
-                if ( !(strstr(keyword, "GAUS") > 0)) {
-                        printf("Keyword fail. Corruption in file.\n");
-                        return -1;
-                }
-                for ( i = 0; i < x_points; ++i) {
-                        for ( j = 0; j < y_points; ++j) {
-                                for ( k = 0; k < z_points; ++k) {
-                                        grids[l][i][j][k] = 0.0f;
-                                        gzread( output_grids[l], number, 8 );
-                                        grids[l][i][j][k] = atof(number);
-
-                                }
-                        }
-
-                }
-
-                gzclose(output_grids[l]);
-
-	}
-
-        fprintf(stderr, "done\n");
-	fflush(stderr);
-	}
-
-
-	/* Flexibility issue is handled before with pre-computation of conformers */
-        for ( ll = 0; ll < lig_b->nconformers; ++ll)  
-        {
-	progress_bar(ll,lig_b->nconformers);
-/*	fprintf(stderr," ******* LIGAND %i ********\n",ll);*/
-        set_default_conformer(&lig_b, ll);
-
-
-	/* Intialize gradient for mobile molecule */
-        for( i = 0; i < lig_b->n_atoms; i++)
-        {
-		lig_b->grads_X[i] = 0.0f;
-                lig_b->grads_Y[i] = 0.0f;
-                lig_b->grads_Z[i] = 0.0f;
-        }
-
-
-        tensor[0][0] = 0.0f;
-        tensor[0][1] = 0.0f;
-        tensor[0][2] = 0.0f;
-
-        tensor[1][0] = 0.0f;
-        tensor[1][1] = 0.0f;
-        tensor[1][2] = 0.0f;
-
-        tensor[2][0] = 0.0f;
-        tensor[2][1] = 0.0f;
-        tensor[2][2] = 0.0f;
-
-	/* COM removal for mobile molecule */
-        com[0] = com[1] = com[2] = 0.0f;
-        for( i = 0; i < lig_b->n_atoms; i++)
-        {       
-                com[0] += lig_b->x[i];
-                com[1] += lig_b->y[i];
-                com[2] += lig_b->z[i];
-        }       
-        com[0] /= (float) lig_b->n_atoms;
-        com[1] /= (float) lig_b->n_atoms;
-        com[2] /= (float) lig_b->n_atoms;
-        for( i = 0; i < lig_b->n_atoms; i++)
-        {
-		lig_b->x[i] -= com[0];
-                lig_b->y[i] -= com[1];
-                lig_b->z[i] -= com[2];
-        }
-
-
-	/* Calculate of moment of inertia tensor for mobile molecule */
-        for( i = 0; i < lig_b->n_atoms; i++)
-        {
-		tensor[0][0] += ( (lig_b->y[i]*lig_b->y[i]) + (lig_b->z[i]*lig_b->z[i])); /*Ixx*/
-		tmp = lig_b->x[i]*lig_b->y[i];
-		tensor[0][1] -= tmp; /* Ixy */
-		tensor[1][0] -= tmp; /* Iyx */
-		tmp = lig_b->x[i]*lig_b->z[i];
- 		tensor[0][2] -= tmp; /* Ixz */
-                tensor[2][0] -= tmp; /* Izx */
-		tensor[1][1] += ( (lig_b->x[i]*lig_b->x[i]) + (lig_b->z[i]*lig_b->z[i])); /*Iyy*/
-		tmp = lig_b->y[i]*lig_b->z[i];
-		tensor[1][2] -= tmp; /* Iyz */
-		tensor[2][1] -= tmp; /* Izy */
-		tensor[2][2] += ( (lig_b->x[i]*lig_b->x[i]) + (lig_b->y[i]*lig_b->y[i])); /*Izz*/
-        }
-
-
-#ifdef DEBUG
-	fprintf(stderr,"%f %f %f\n",tensor[0][0],tensor[0][1],tensor[0][2]);
-        fprintf(stderr,"%f %f %f\n",tensor[1][0],tensor[1][1],tensor[1][2]);
-        fprintf(stderr,"%f %f %f\n",tensor[2][0],tensor[2][1],tensor[2][2]);
-#endif
-
-	/* Diagonalize tensor */
-	c[0] = tensor[0][0];
-	c[1] = tensor[0][1];
-        c[2] = tensor[0][2];
-        c[3] = tensor[1][0];
-        c[4] = tensor[1][1];
-        c[5] = tensor[1][2];
-        c[6] = tensor[2][0];
-        c[7] = tensor[2][1];
-        c[8] = tensor[2][2];
-	jacobi(3, c, d, v);
-
-	/* Build rotation matrix */
-	rot_mat[0][0] = v[0];
-        rot_mat[0][1] = v[1];
-        rot_mat[0][2] = v[2];
-
-        rot_mat[1][0] = v[3];
-        rot_mat[1][1] = v[4];
-        rot_mat[1][2] = v[5];
-
-        rot_mat[2][0] = v[6];
-        rot_mat[2][1] = v[7];
-        rot_mat[2][2] = v[8];
-
-#ifdef DEBUG
-	fprintf(stderr,"Eigenvals: %f %f %f\n",d[0],d[1],d[2]);
-#endif
-
-	/* Apply rotation */
-        Xrot = Yrot = Zrot = 0.0f;
-        for ( i = 0; i < lig_b->n_atoms; ++i) 
-	{
-         Xrot = (rot_mat[0][0] * lig_b->x[i] + rot_mat[1][0] * lig_b->y[i] + rot_mat[2][0] * lig_b->z[i]);
-         Yrot = (rot_mat[0][1] * lig_b->x[i] + rot_mat[1][1] * lig_b->y[i] + rot_mat[2][1] * lig_b->z[i]);
-         Zrot = (rot_mat[0][2] * lig_b->x[i] + rot_mat[1][2] * lig_b->y[i] + rot_mat[2][2] * lig_b->z[i]);
-         lig_b->x[i] = Xrot;
-         lig_b->y[i] = Yrot;
-         lig_b->z[i] = Zrot;
-        }
-
-	/* Backup coordinates */
-        for( j = 0; j < lig_b->n_atoms; j++)
-        {
-                xd[j] = lig_b->x[j];
-                yd[j] = lig_b->y[j];
-                zd[j] = lig_b->z[j];
-        }
-
-	/* ?! Not useful anymore but to avoid changing var names by zeros since template is at origin  */
-        com_template[0] = com_template[1] = com_template[2] = 0.0f;
-	/* Get self-score */
-        bb = -get_volumen_intersection(lig_b,&lig_b,0,0);
-	bb_color = -get_color_intersection(lig_b,&lig_b,0,0);
-
-	for( k = 0; k < 4; k++) /* Standard rotations loop */
-	{
-
-	        for( j = 0; j < lig_b->n_atoms; j++)
-	        {
-	                lig_b->x[j] = xd[j];
-	                lig_b->y[j] = yd[j];
-	                lig_b->z[j] = zd[j];
-	        }
-
-		if( k == 0){ /* First "standard" orientation */
-		}else if( k ==1 ){ /* Rotate pi radians x-axis */
-			rot[0] = -3.14159f;
-			rot[1] = 0.0f;
-			rot[2] = 0.0f;
-			transformate_rigid(&lig_b, com_template, rot, 1.0f);
-                }else if( k ==2 ){ /* Rotate pi radians y-axis */
-                        rot[1] = -3.14159f;
-                        rot[0] = 0.0f;
-                        rot[2] = 0.0f;
-                        transformate_rigid(&lig_b, com_template, rot, 1.0f);
-                }else if( k ==1 ){ /* Rotate pi radians z-axis */
-                        rot[2] = -3.14159f;
-                        rot[1] = 0.0f;
-                        rot[0] = 0.0f;
-                        transformate_rigid(&lig_b, com_template, rot, 1.0f);
 		}
 
-		/* Try to find global minimum (since score is negative) in 200 steps */
-/*		gau_minimizer_bfgs(lig_a, &lig_b, 200);*/
-		if( min_flag == 1 ){
-			gau_minimizer_bfgs_ingrid(&lig_b, 200, grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
-		}else{
+	        fprintf(stderr, "done\n");
+		fflush(stderr);
+	}
 
-                        for ( l = 0; l < 7; ++l)
-                                simplex[0][l] = 0.0f;
+
+	/* Allocate results */
+	x = (float **) calloc(sizeof(float *), ndb);
+	y = (float **) calloc(sizeof(float *), ndb);
+	z = (float **) calloc(sizeof(float *), ndb);
+	for( k = 0; k < ndb; k++)
+	{
+		lig_b = database[k];
+        	x[k] = (float *) calloc(sizeof(float),lig_b->n_atoms);
+	        y[k] = (float *) calloc(sizeof(float),lig_b->n_atoms);
+	        z[k] = (float *) calloc(sizeof(float),lig_b->n_atoms);
+	}
+
+
+	scores_list = (float **) calloc(sizeof(float *), ndb);
+        for( k = 0; k < ndb; k++)
+        {
+		scores_list[k] = (float *) calloc(sizeof(float),10);
+		scores_list[k][3] = k;
+        }
+
+	/* Flexibility issue is handled before with pre-computation of conformers */
+        /* From rev6 on, a multi-MOL2 database was used as input */
+        for ( ll = 0; ll < ndb; ++ll)  
+        {
+		lig_b = database[ll];
+	
+		bestval = 0;
+		bestval1 = 0;
+		bestval2 = 0;
+
+	        types = (int *) calloc(sizeof(int),lig_b->n_atoms);
+	        types2 = (int **) calloc(sizeof(int *),lig_b->n_atoms);
+
+	        for( i = 0; i < lig_b->n_atoms; i++)
+	        {
+	                types2[i] = (int *) calloc(sizeof(int),6);
+	        }
+
+	        for( i = 0; i < lig_b->n_atoms; i++)
+	        {
+	                types[i] = -1;
+	                if( lig_b->atoms[i] == 1)
+	                 types[i] = 0;
+	                else if( lig_b->atoms[i] == 2)
+	                 types[i] = 1;
+	                else if( lig_b->atoms[i] == 3)
+	                 types[i] = 2;
+	                else if( lig_b->atoms[i] == 4)
+	                 types[i] = -1;
+	                else if( lig_b->atoms[i] == 5)
+	                 types[i] = 3;
+	                else if( lig_b->atoms[i] == 6)
+	                 types[i] = 4;
+	                else if( lig_b->atoms[i] == 10)
+	                 types[i] = 5;
+	                else
+	                 types[i] = 0;
+	        }
+
+		detect_groups_heruistic(lig_b, &types2);
+
+
+	        /* Backup coordinates for rotation pi around three axes */
+	        xd = (float *) calloc(sizeof(float),lig_b->n_atoms);
+	        yd = (float *) calloc(sizeof(float),lig_b->n_atoms);
+	        zd = (float *) calloc(sizeof(float),lig_b->n_atoms);
+
+
+
+		#ifndef _OPENMP
+		progress_bar(ll,ndb);
+		#endif
+/*	fprintf(stderr," ******* LIGAND %i ********\n",ll);*/
+
+	/* Intialize gradient for mobile molecule */
+	        for( i = 0; i < lig_b->n_atoms; i++)
+	        {
+			lig_b->grads_X[i] = 0.0f;
+	                lig_b->grads_Y[i] = 0.0f;
+	                lig_b->grads_Z[i] = 0.0f;
+	        }
+
+
+	        tensor[0][0] = 0.0f;
+	        tensor[0][1] = 0.0f;
+	        tensor[0][2] = 0.0f;
+
+	        tensor[1][0] = 0.0f;
+	        tensor[1][1] = 0.0f;
+	        tensor[1][2] = 0.0f;
+
+	        tensor[2][0] = 0.0f;
+	        tensor[2][1] = 0.0f;
+	        tensor[2][2] = 0.0f;
+
+		/* COM removal for mobile molecule */
+	        com[0] = com[1] = com[2] = 0.0f;
+	        for( i = 0; i < lig_b->n_atoms; i++)
+	        {       
+	                com[0] += lig_b->x[i];
+	                com[1] += lig_b->y[i];
+	                com[2] += lig_b->z[i];
+	        }       
+	        com[0] /= (float) lig_b->n_atoms;
+	        com[1] /= (float) lig_b->n_atoms;
+	        com[2] /= (float) lig_b->n_atoms;
+	        for( i = 0; i < lig_b->n_atoms; i++)
+	        {
+			lig_b->x[i] -= com[0];
+	                lig_b->y[i] -= com[1];
+	                lig_b->z[i] -= com[2];
+	        }
+
+
+		/* Calculate of moment of inertia tensor for mobile molecule */
+	        for( i = 0; i < lig_b->n_atoms; i++)
+	        {
+			tensor[0][0] += ( (lig_b->y[i]*lig_b->y[i]) + (lig_b->z[i]*lig_b->z[i])); /*Ixx*/
+			tmp = lig_b->x[i]*lig_b->y[i];
+			tensor[0][1] -= tmp; /* Ixy */
+			tensor[1][0] -= tmp; /* Iyx */
+			tmp = lig_b->x[i]*lig_b->z[i];
+	 		tensor[0][2] -= tmp; /* Ixz */
+	                tensor[2][0] -= tmp; /* Izx */
+			tensor[1][1] += ( (lig_b->x[i]*lig_b->x[i]) + (lig_b->z[i]*lig_b->z[i])); /*Iyy*/
+			tmp = lig_b->y[i]*lig_b->z[i];
+			tensor[1][2] -= tmp; /* Iyz */
+			tensor[2][1] -= tmp; /* Izy */
+			tensor[2][2] += ( (lig_b->x[i]*lig_b->x[i]) + (lig_b->y[i]*lig_b->y[i])); /*Izz*/
+	        }
+
+
+		#ifdef DEBUG
+			fprintf(stderr,"%f %f %f\n",tensor[0][0],tensor[0][1],tensor[0][2]);
+		        fprintf(stderr,"%f %f %f\n",tensor[1][0],tensor[1][1],tensor[1][2]);
+		        fprintf(stderr,"%f %f %f\n",tensor[2][0],tensor[2][1],tensor[2][2]);
+		#endif
+
+		/* Diagonalize tensor */
+		c[0] = tensor[0][0];
+		c[1] = tensor[0][1];
+	        c[2] = tensor[0][2];
+	        c[3] = tensor[1][0];
+	        c[4] = tensor[1][1];
+	        c[5] = tensor[1][2];
+	        c[6] = tensor[2][0];
+	        c[7] = tensor[2][1];
+	        c[8] = tensor[2][2];
+		jacobi(3, c, d, v);
+
+		/* Build rotation matrix */
+		rot_mat[0][0] = v[0];
+	        rot_mat[0][1] = v[1];
+	        rot_mat[0][2] = v[2];
+
+	        rot_mat[1][0] = v[3];
+	        rot_mat[1][1] = v[4];
+	        rot_mat[1][2] = v[5];
+
+	        rot_mat[2][0] = v[6];
+	        rot_mat[2][1] = v[7];
+	        rot_mat[2][2] = v[8];
+
+		#ifdef DEBUG
+			fprintf(stderr,"Eigenvals: %f %f %f\n",d[0],d[1],d[2]);
+		#endif
+
+		/* Apply rotation */
+	        Xrot = Yrot = Zrot = 0.0f;
+	        for ( i = 0; i < lig_b->n_atoms; ++i) 
+		{
+	         Xrot = (rot_mat[0][0] * lig_b->x[i] + rot_mat[1][0] * lig_b->y[i] + rot_mat[2][0] * lig_b->z[i]);
+	         Yrot = (rot_mat[0][1] * lig_b->x[i] + rot_mat[1][1] * lig_b->y[i] + rot_mat[2][1] * lig_b->z[i]);
+	         Zrot = (rot_mat[0][2] * lig_b->x[i] + rot_mat[1][2] * lig_b->y[i] + rot_mat[2][2] * lig_b->z[i]);
+	         lig_b->x[i] = Xrot;
+	         lig_b->y[i] = Yrot;
+	         lig_b->z[i] = Zrot;
+	        }
+
+		/* Backup coordinates */
+	        for( j = 0; j < lig_b->n_atoms; j++)
+	        {
+	                xd[j] = lig_b->x[j];
+	                yd[j] = lig_b->y[j];
+	                zd[j] = lig_b->z[j];
+	        }
+
+		/* ?! Not useful anymore but to avoid changing var names by zeros since template is at origin  */
+	        com_template[0] = com_template[1] = com_template[2] = 0.0f;
+		/* Get self-score */
+	        bb = -get_volumen_intersection(lig_b,&lig_b,0,0);
+		bb_color = -get_color_intersection(lig_b,&lig_b,types2,types2,0,0);
+
+		for( k = 0; k < 4; k++) /* Standard rotations loop */
+		{
+
+		        for( j = 0; j < lig_b->n_atoms; j++)
+		        {
+		                lig_b->x[j] = xd[j];
+		                lig_b->y[j] = yd[j];
+		                lig_b->z[j] = zd[j];
+		        }
+
+			if( k == 0){ /* First "standard" orientation */
+			}else if( k ==1 ){ /* Rotate pi radians x-axis */
+				rot[0] = -3.14159f;
+				rot[1] = 0.0f;
+				rot[2] = 0.0f;
+				transformate_rigid(&lig_b, com_template, rot, 1.0f);
+	                }else if( k ==2 ){ /* Rotate pi radians y-axis */
+	                        rot[1] = -3.14159f;
+	                        rot[0] = 0.0f;
+	                        rot[2] = 0.0f;
+	                        transformate_rigid(&lig_b, com_template, rot, 1.0f);
+	                }else if( k ==1 ){ /* Rotate pi radians z-axis */
+	                        rot[2] = -3.14159f;
+	                        rot[1] = 0.0f;
+	                        rot[0] = 0.0f;
+	                        transformate_rigid(&lig_b, com_template, rot, 1.0f);
+			}
+
+			/* Try to find global minimum (since score is negative) in 200 steps */
+/*		gau_minimizer_bfgs(lig_a, &lig_b, 200);*/
+			if( min_flag == 1 ){
+				gau_minimizer_bfgs_ingrid(&lig_b, 200, grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
+			}else{
+
+	                        for ( l = 0; l < 7; ++l)
+	                                simplex[0][l] = 0.0f;
 
 /*                        simplex_energies[0] =  get_simplex_energy(lig_b, simplex[0], lig_a);*/
-                        simplex_energies[0] =  get_simplex_energy_ingrid(lig_b, simplex[0], grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
-                        for ( l = 1; l < 7; ++l)
-                                simplex_energies[l] = 0.0f;
+	                        simplex_energies[0] =  get_simplex_energy_ingrid(lig_b, simplex[0], grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
+	                        for ( l = 1; l < 7; ++l)
+	                                simplex_energies[l] = 0.0f;
 
-                        while ( 1 == 1) { /* A little kitty died because of this */
-
-                                Eold = simplex_energies[bestsimplex];
-                                for ( j = 0; j < 6; ++j)
-                                        simplex[0][j] = simplex[bestsimplex][j];
-                                simplex_energies[0] = Eold;
-                                for ( j = 1; j < 7; ++j) {
-                                        for ( l = 0; l < 6; ++l) {
-                                                randy = 2.0 * (gen_rand_float() - 0.5);
-                                                if ( l <= 2)
-                                                        simplex[j][l] = simplex[0][l] + translation_step * randy;
-                                                else{
-                                                        randy = randy * rotation_step;
-                                                        if ( randy < 0) randy = 360.0f + randy;
-                                                        simplex[j][l] = simplex[0][l] + randy;
-                                                }
-                                        }
+	                        while ( 1 == 1) { /* A little kitty died because of this */
+	
+	                                Eold = simplex_energies[bestsimplex];
+	                                for ( j = 0; j < 6; ++j)
+	                                        simplex[0][j] = simplex[bestsimplex][j];
+	                                simplex_energies[0] = Eold;
+	                                for ( j = 1; j < 7; ++j) {
+	                                        for ( l = 0; l < 6; ++l) {
+	                                                randy = 2.0 * (gen_rand_float() - 0.5);
+	                                                if ( l <= 2)
+	                                                        simplex[j][l] = simplex[0][l] + translation_step * randy;
+	                                                else{
+	                                                        randy = randy * rotation_step;
+	                                                        if ( randy < 0) randy = 360.0f + randy;
+	                                                        simplex[j][l] = simplex[0][l] + randy;
+	                                                }
+	                                        }
 /*                                        simplex_energies[j] = get_simplex_energy(lig_b, simplex[j], lig_a);*/
-                        		  simplex_energies[j] =  get_simplex_energy_ingrid(lig_b, simplex[j], grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
+	                        			simplex_energies[j] =  get_simplex_energy_ingrid(lig_b, simplex[j], grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
 
 
-                                }
+	       	                         }
 
 /*                                go_simplex_go(6, simplex, &simplex_energies, lig_b, lig_a);*/
-                        	  go_simplex_go_ingrid(6, simplex, &simplex_energies, lig_b, grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
-                                simplex_steps++;
+	                        	  go_simplex_go_ingrid(6, simplex, &simplex_energies, lig_b, grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
+	                                simplex_steps++;
 
-                                Emin = 99999.9;
-                                bestsimplex = 0;
-                                for ( l = 0; l < 7; ++l) {
-                                        if ( simplex_energies[l] < Emin) {
-                                                bestsimplex = l;
-                                                Emin = simplex_energies[l];
-                                        }
-                                }
+	                                Emin = 99999.9;
+	                                bestsimplex = 0;
+	                                for ( l = 0; l < 7; ++l) {
+	                                        if ( simplex_energies[l] < Emin) {
+	                                                bestsimplex = l;
+	                                                Emin = simplex_energies[l];
+	                                        }
+	                                }
 /*                                Enew = get_simplex_energy(lig_a, simplex[bestsimplex], lig_a);*/
-                        	  Enew = get_simplex_energy_ingrid(lig_b, simplex[bestsimplex], grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
+	                        	Enew = get_simplex_energy_ingrid(lig_b, simplex[bestsimplex], grids, types, types2, min_grid, max_grid, x_points, y_points, z_points, spacing);
 
-                                Enew = Emin;
+	                                Enew = Emin;
 
-                                if ( simplex_steps > 20 || fabs(Eold - Enew) < 0.01)
-				{
-                                        break;
-				}
-                        }
-                        for ( l = 0; l < lig_b->n_atoms; ++l) {
-                                lig_b->x[l] = xd[l];
-                                lig_b->y[l] = yd[l];
-                                lig_b->z[l] = zd[l];
-                        }
-                        transformate_mol(&lig_b, simplex[bestsimplex]);
+	                                if ( simplex_steps > 20 || fabs(Eold - Enew) < 0.01)
+					{
+       	                                 break;
+					}
+	                        }
+	                        for ( l = 0; l < lig_b->n_atoms; ++l) {
+	                                lig_b->x[l] = xd[l];
+	                                lig_b->y[l] = yd[l];
+	                                lig_b->z[l] = zd[l];
+	                        }
+	                        transformate_mol(&lig_b, simplex[bestsimplex]);
 
-		} /* Optimization choice */
+			} /* Optimization choice */
 
 
-		/* Get candidate overlap */
-	        ab = -get_volumen_intersection(lig_a,&lig_b,0,0);
-		ab_color = -get_color_intersection(lig_a,&lig_b,0,0);
+			/* Get candidate overlap */
+		        ab = -get_volumen_intersection(lig_a,&lig_b,0,0);
+			ab_color = -get_color_intersection(lig_a,&lig_b,types1,types2,0,0);
 
-		/* Calculate both tanimoto scores */
-		tanimoto = ab/(aa+bb-ab);
-		tanimoto_color = ab_color/(aa_color+bb_color-ab_color);
+			/* Calculate both tanimoto scores */
+			tanimoto = ab/(aa+bb-ab);
+			tanimoto_color = ab_color/(aa_color+bb_color-ab_color);
 
 /*                tanimoto = ab/( (aa*0.95)+(bb*0.05)+ab);
                 tanimoto_color = ab_color/((aa_color*0.95)+(bb_color*0.05)+ab_color);*/
 
 		
-		if ( (tanimoto_color+tanimoto) > bestval)
-		{
-		    bestani = ll;
-		    bestval = tanimoto_color+tanimoto; /* Save "combo" value */
-                    bestval1 = tanimoto_color;
-                    bestval2 = tanimoto;
-		    /* Save best coordinates so far */
-		    for( j = 0; j < lig_b->n_atoms; j++)
-		    {
-			x[j] = lig_b->x[j];
-	                y[j] = lig_b->y[j];
-	                z[j] = lig_b->z[j];
-		    }
-		}
-		/* Clean up the gradients mesh in lig_b structure */
-		for( j = 0; j < lig_b->n_atoms; j++)
-		{
-	                lig_b->grads_X[j] = 0.0f;
-	                lig_b->grads_Y[j] = 0.0f;
-	                lig_b->grads_Z[j] = 0.0f;
-		}
+			if ( (tanimoto_color+tanimoto) > bestval)
+			{
+			    bestani = ll;
+			    bestval = tanimoto_color+tanimoto; /* Save "combo" value */
+	                    bestval1 = tanimoto_color;
+	                    bestval2 = tanimoto;
+			    scores_list[ll][0] = bestval;
+			    scores_list[ll][1] = bestval1;
+			    scores_list[ll][2] = bestval2;
+			    scores_list[ll][3] = (float) ll; /* Index, for sorting later */
+			    scores_list[ll][4] = (ab/((0.95*aa)+(0.05*bb))) + (ab_color/((0.95*aa_color)+(0.05*bb_color))); 
+			    scores_list[ll][5] = ab_color/((0.95*aa_color)+(0.05*bb_color)); /* Tversky */
+			    scores_list[ll][6] = ab/((0.95*aa)+(0.05*bb)); /* Tversky color */
+                            scores_list[ll][7] = (ab/((0.05*aa)+(0.95*bb))) + (ab_color/((0.05*aa_color)+(0.95*bb_color)));
+			    scores_list[ll][8] = ab_color/((0.05*aa_color)+(0.95*bb_color)); /* Tversky color */
+			    scores_list[ll][9] = ab/((0.05*aa)+(0.95*bb)); /* Tversky color */
 
-	} /* End standard rotations loop */
+			    /* Save best coordinates so far */
+			    for( j = 0; j < lig_b->n_atoms; j++)
+			    {
+				x[ll][j] = lig_b->x[j];
+		                y[ll][j] = lig_b->y[j];
+		                z[ll][j] = lig_b->z[j];
+			    }
+			}
+			/* Clean up the gradients mesh in lig_b structure */
+			for( j = 0; j < lig_b->n_atoms; j++)
+			{
+		                lig_b->grads_X[j] = 0.0f;
+		                lig_b->grads_Y[j] = 0.0f;
+		                lig_b->grads_Z[j] = 0.0f;
+			}
 
+		} /* End standard rotations loop */
+
+
+	        for(j = 0; j < lig_b->n_atoms; j++)
+        	        free(types2[j]);
+
+		free(types); free(types2);
+		free(xd); free(yd); free(zd);
 
 	} /* End Conformers loop */
+
+
+	for(j = 0; j < lig_a->n_atoms; j++)
+	        free(types1[j]);
+
+	free(types1);
 
 	
 	/* We dont need the grids anymore */
@@ -952,76 +1184,124 @@ char *argv[];
 	free(grids);
 
 
+	/* Quick sort results based on score */
+	qsort(scores_list, ndb, sizeof scores_list[0], compare_scores);
 
-	/* Restore best coordinates */
-        for( j = 0; j < lig_b->n_atoms; j++)
-        {
-              lig_b->x[j] = x[j];
-              lig_b->y[j] = y[j];
-              lig_b->z[j] = z[j];
-        }
-
-        printf("MODEL 1\n");
-        dump_pdb(lig_b);
-        printf("ENDMDL\n");
-
-	/* Apply initial transformation of the template to restore the frame */
-        Xrot = Yrot = Zrot = 0.0f;
-        for ( i = 0; i < lig_b->n_atoms; ++i)
-        {
-         Xrot = (rot_inv[0][0] * lig_b->x[i] + rot_inv[1][0] * lig_b->y[i] + rot_inv[2][0] * lig_b->z[i]);
-         Yrot = (rot_inv[0][1] * lig_b->x[i] + rot_inv[1][1] * lig_b->y[i] + rot_inv[2][1] * lig_b->z[i]);
-         Zrot = (rot_inv[0][2] * lig_b->x[i] + rot_inv[1][2] * lig_b->y[i] + rot_inv[2][2] * lig_b->z[i]);
-         lig_b->x[i] = Xrot;
-         lig_b->y[i] = Yrot;
-         lig_b->z[i] = Zrot;
-        }
-
-        for( j = 0; j < lig_b->n_atoms; j++)
-        {
-              lig_b->x[j] += com2[0];
-              lig_b->y[j] += com2[1];
-              lig_b->z[j] += com2[2];
-        }
+	now = time(NULL);
+	t = localtime(&now);
+	strftime(date_text, sizeof(date_text)-1, "%d/%m/%Y %H:%M", t);
+	fprintf(output_list,"#Results CROCK %s - %s - Database: %s - Reference %s\n",_CROCK_VERSION,date_text,db_filename,ref_filename);
+	fprintf(output_list,"#MolIdx,Molname,Tanimoto_Combo,Tanimoto_Color,Tanimoto_Shape,Tversky_Combo_ref,Tversky_Color_ref,Tversky_Shape_ref,Tversky_Combo,Tversky_Color,Tversky_Shape\n");
+	for( j = 0; j < ndb; j++)
+	{
+		fprintf(output_list,"%i,%s,%f,%f,%f,%f,%f,%f,%f,%f,%f\n",((int) scores_list[j][3])+1,
+			database[(int) scores_list[j][3]]->comment,scores_list[j][0],scores_list[j][1],
+			scores_list[j][2],scores_list[j][4],scores_list[j][5],scores_list[j][6],
+			scores_list[j][7],scores_list[j][8], scores_list[j][9]);
+	}
+	fflush(output_list);
 
 
+	/* Print max results or all to PDB file */
+	for( ll = 0; ll < MIN(max_output,ndb); ll++)
+	{
+		/* Restore best coordinates */
+	        lig_b = database[(int) scores_list[ll][3]];
+	        for( j = 0; j < lig_b->n_atoms; j++)
+	        {
+	              lig_b->x[j] = x[(int) scores_list[ll][3]][j];
+	              lig_b->y[j] = y[(int) scores_list[ll][3]][j];
+	              lig_b->z[j] = z[(int) scores_list[ll][3]][j];
+	        }
+
+		tmp_es = USR_compare_molecules(lig_a, lig_b);
+
+/*                fprintf(output,"MODEL %i\n",ll+1);
+                fprintf(output,"REMARK CROCK RESULT - %s\n",_CROCK_VERSION);
+                fprintf(output,"REMARK MolIndex: %i\n",((int) scores_list[ll][3])+1);
+                fprintf(output,"REMARK Tc: %f\n",scores_list[ll][0]);
+                fprintf(output,"REMARK Color: %f\n",scores_list[ll][1]);
+                fprintf(output,"REMARK Shape: %f\n",scores_list[ll][2]);
+                fprintf(output,"REMARK ElectroShape: %f\n",tmp_es);
+                fprintf(output,"REMARK TriScore: %f\n",scores_list[ll][0]+tmp_es);*/
 
 
-	/* Print result! */
-	printf("MODEL 1\n");
-        printf("REMARK CROCK RESULT - rev5/Dec2015\n");
-        /** This REMARK is for integration within VSDMIP */
-        printf("REMARK numConformer: %8i\n",bestani+1);
-	printf("REMARK Tc: %f\n",bestval);
-	printf("REMARK Color: %f\n",bestval1);
-	printf("REMARK Shape: %f\n",bestval2);
-	printf("REMARK TriScore: %f\n",bestval+USR_compare_molecules(lig_a, lig_b));
-        dump_pdb(lig_b);
-	printf("ENDMDL\n");
-	fflush(stdout);
-        fprintf(stderr,"\nBest Tc: %f\n",bestval);
-	fprintf(stderr,"TriScore: %f\n",bestval+USR_compare_molecules(lig_a, lig_b));
+                sprintf(tmp_comment,"%s - MolIndex: %i - Tc: %f - ES: %f",lig_b->comment, ((int) scores_list[ll][3])+1,scores_list[ll][0],tmp_es);
+                strncpy(lig_b->comment,tmp_comment,1023);
+
+
+	        if( print_frame != 1)
+	        {
+			/* Apply initial transformation of the template to restore the frame */
+		        Xrot = Yrot = Zrot = 0.0f;
+		        for ( i = 0; i < lig_b->n_atoms; ++i)
+		        {
+		         Xrot = (rot_inv[0][0] * lig_b->x[i] + rot_inv[1][0] * lig_b->y[i] + rot_inv[2][0] * lig_b->z[i]);
+		         Yrot = (rot_inv[0][1] * lig_b->x[i] + rot_inv[1][1] * lig_b->y[i] + rot_inv[2][1] * lig_b->z[i]);
+		         Zrot = (rot_inv[0][2] * lig_b->x[i] + rot_inv[1][2] * lig_b->y[i] + rot_inv[2][2] * lig_b->z[i]);
+		         lig_b->x[i] = Xrot;
+		         lig_b->y[i] = Yrot;
+		         lig_b->z[i] = Zrot;
+		        }
+
+		        for( j = 0; j < lig_b->n_atoms; j++)
+		        {
+		              lig_b->x[j] += com2[0];
+		              lig_b->y[j] += com2[1];
+		              lig_b->z[j] += com2[2];
+		        }
+
+		}
+
+                /* Print result! */
+
+                dump_mol2_to_file(lig_b,output);
+
+/*		fprintf(output,"ENDMDL\n");*/
+		fflush(output);
+	}
+
+        fprintf(stderr,"\nBest Tc: %f\n",scores_list[0][0]);
+
+	fclose(output);
+	fclose(output_list);
+
+	free(output_filename);
+	free(output_listname);
 
 	free(simplex_energies);
+
 	/* Free backup coordinates */
+        for( i = 0; i < ndb; i++)
+        {
+		free(x[i]);
+		free(y[i]);
+		free(z[i]);
+		free(scores_list[i]);
+	}
+	free(scores_list);
 	free(x); free(y); free(z);
-        free(xd); free(yd); free(zd);
-
-	free(types); 
-	for(i = 0; i < lig_b->n_atoms; i++)
-		free(types2[i]);
-
-	free(types2);
 
 	/* Clean structures */
-	cleanup(&lig_a);
-	cleanup(&lig_b);
+        for( i = 0; i < nrefs; i++)
+        {
+                lig_b = templates[i];
+                cleanup(&lig_b);
+        }
+        free(templates);
+
+	for( i = 0; i < ndb; i++)
+	{
+		lig_b = database[i];
+		cleanup(&lig_b);
+	}
+	free(database);
 
 }
 
 void advertise()
 {
-        fprintf(stderr, "CROCK rev5 Another program to superimpose ligands using gaussians\n");
+        fprintf(stderr, "CROCK %s Another program to superimpose ligands using gaussians\n",_CROCK_VERSION);
         fprintf(stderr, "Brought to you by Department of Pharmacology UAH:\n\n ");
         fprintf(stderr, "\tAlvaro Cortes Cabrera <alvarocortesc@gmail.com>\n");
         fprintf(stderr, "\tFederico Gago <federico.gago@uah.es>\n\n");

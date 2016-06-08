@@ -70,13 +70,22 @@ int cleanup(MOL2 **mymols)
 	free(mols->vdwpairs_b);
 	free(mols->res_num);
 	free(mols->res_type);
+	free(mols->comment);
         for( j = 0; j < mols->n_atoms; j++)
         {
 		free(mols->res_names[j]);
 		free(mols->atom_names[j]);
+		free(mols->atom_types_sybyl[j]);
         }
 	free(mols->res_names);
         free(mols->atom_names);
+        free(mols->atom_types_sybyl);
+
+        for( j = 0; j < mols->n_rings; j++)
+        {
+                free(mols->rings[j]);
+        }
+	free(mols->rings);
 
 	for( j = 0; j < mols->nconformers; j++)
 	{

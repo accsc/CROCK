@@ -44,6 +44,7 @@ void gaussian_color_add_grid_forces(MOL2 **mymol, float ****grids, int **types, 
         register double p1u, p1v, p1w;
         register int u0,  v0,  w0;
         register int u1,  v1,  w1;
+	float com[3];
 
         MOL2 *mol = NULL;
 
@@ -98,7 +99,7 @@ void gaussian_color_add_grid_forces(MOL2 **mymol, float ****grids, int **types, 
                         u1  = (u0 = (int)(u = (z - zd) / spacing)) + 1;
                         p1u = 1.0L - (p0u = u - (float)u0);
 
-                        for( l = 0; l < 6; l++)
+                        for( l = 0; l < 5; l++)
                         {
                                 tmpe = 0.0f;
                                 if ( types[i][l] != 0)
@@ -172,6 +173,110 @@ void gaussian_color_add_grid_forces(MOL2 **mymol, float ****grids, int **types, 
                 }
 
         }
+
+        for( i = 0; i < mol->n_rings; i++)
+        {
+                com[0] = com[1] = com[2] = 0.0f;
+                for( l = 0; l < mol->rings[i][0]; l++)
+                {
+                        com[0] += mol->x[mol->rings[i][1+l]];
+                        com[1] += mol->y[mol->rings[i][1+l]];
+                        com[2] += mol->z[mol->rings[i][1+l]];
+                }
+                com[0] /= (float) mol->rings[i][0];
+                com[1] /= (float) mol->rings[i][0];
+                com[2] /= (float) mol->rings[i][0];
+
+                ix = (int)((com[0] - min_grid[0]) / spacing);
+                iy = (int)((com[1] - min_grid[1]) / spacing);
+                iz = (int)((com[2] - min_grid[2]) / spacing);
+
+                if ( ix >= 1 && iy >= 1 &&
+                     iz >= 1 && ix < (max_x - 1) && iy < (max_y - 1) &&
+                     iz < (max_z - 1) ) {
+
+                        xd = min_grid[0];
+                        yd = min_grid[1];
+                        zd = min_grid[2];
+                        w1  = (w0 = (int)(w = (x - xd) / spacing )) + 1;
+                        p1w = 1.0L - (p0w = w - (float)w0);
+                        v1  = (v0 = (int)(v = (y - yd) / spacing)) + 1;
+                        p1v = 1.0L - (p0v = v - (float)v0);
+                        u1  = (u0 = (int)(u = (z - zd) / spacing)) + 1;
+                        p1u = 1.0L - (p0u = u - (float)u0);
+
+                        kpot = 11;
+                        tmpe = p1u * p1v * p1w * grids[kpot][ w0 ][ v0 ][ u0 ];
+                        tmpe += p0u * p1v * p1w * grids[kpot][ w0 ][ v0 ][ u1 ];
+                        tmpe += p1u * p0v * p1w * grids[kpot][ w0 ][ v1 ][ u0 ];
+                        tmpe += p0u * p0v * p1w * grids[kpot][ w0 ][ v1 ][ u1 ];
+                        tmpe += p1u * p1v * p0w * grids[kpot][ w1 ][ v0 ][ u0 ];
+                        tmpe += p0u * p1v * p0w * grids[kpot][ w1 ][ v0 ][ u1 ];
+                        tmpe += p1u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u0 ];
+                        tmpe += p0u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u1 ];
+
+                        V000 = grids[kpot][ix][iy][iz];
+                        V100 = grids[kpot][ix + 1][iy][iz];
+                        V010 = grids[kpot][ix][iy + 1][iz];
+                        V110 = grids[kpot][ix + 1][iy + 1][iz];
+                        V001 = grids[kpot][ix][iy][iz + 1];
+                        V101 = grids[kpot][ix + 1][iy][iz + 1];
+                        V011 = grids[kpot][ix][iy + 1][iz + 1];
+                        V111 = grids[kpot][ix + 1][iy + 1][iz + 1];
+                        xa = (ix * spacing) + min_grid[0];
+                        ya = (iy * spacing) + min_grid[1];
+                        za = (iz * spacing) + min_grid[2];
+
+
+	                for( l = 0; l < mol->rings[i][0]; l++)
+       	        	{
+				V000 /= (float) mol->rings[i][0];
+				V100 /= (float) mol->rings[i][0];
+				V010 /= (float) mol->rings[i][0];
+				V110 /= (float) mol->rings[i][0];
+				V001 /= (float) mol->rings[i][0];
+				V101 /= (float) mol->rings[i][0];
+				V011 /= (float) mol->rings[i][0];
+				V111 /= (float) mol->rings[i][0];
+
+	                        x = mol->x[mol->rings[i][1+l]];
+	                        y = mol->y[mol->rings[i][1+l]];
+	                        z = mol->z[mol->rings[i][1+l]];
+		
+	                        xd = x - xa;
+	                        yd = y - ya;
+	                        zd = z - za;
+
+	                        mol->grads_X[l] += V000 * -1 * (1 - yd) * (1 - zd) +
+                                           V100 * (1 - yd) * (1 - zd) +
+                                           V010 * -1 * yd * (1 - zd) +
+                                           V110 * yd * (1 - zd) +
+                                           V001 * -1 * (1 - yd) * zd +
+                                           V101 * (1 - yd) * zd +
+                                           V011 * -1 * yd * zd +
+                                           V111 * yd * zd;
+
+	                        mol->grads_Y[l] += V000 * (1 - xd) * -1 * (1 - zd) +
+                                           V100 * xd * -1 * (1 - zd) +
+                                           V010 * (1 - xd) *  (1 - zd) +
+                                           V110 * xd * (1 - zd) +
+                                           V001 * (1 - xd) * -1 * zd +
+                                           V101 * xd * -1 * zd +
+                                           V011 * (1 - xd) * zd +
+                                           V111 * xd * zd;
+
+	                        mol->grads_Z[l] += V000 * (1 - xd) * (1 - yd) * -1 +
+                                           V100 * xd * (1 - yd) * -1 +
+                                           V010 * (1 - xd) * yd * -1 +
+                                           V110 * xd * yd * -1 +
+                                           V001 * (1 - xd) * (1 - yd) +
+                                           V101 * xd * (1 - yd) +
+                                           V011 * (1 - xd) * yd +
+                                           V111 * xd * yd;
+
+			}
+                }
+	}
 
         return;
 }
@@ -283,7 +388,7 @@ void gaussian_add_grid_forces(MOL2 **mymol, float ****grids, int *types, float m
 
 
 
-float get_color_intersection_at_point(MOL2 *a, float x, float y, float z, int type, int pocket )
+float get_color_intersection_at_point(MOL2 *a, int **types_a, float x, float y, float z, int type, int pocket )
 {
         float vol = 0.0f, tmpvol = 0.0f;
         int i = 0, j = 0, l = 0;
@@ -292,150 +397,81 @@ float get_color_intersection_at_point(MOL2 *a, float x, float y, float z, int ty
         const float pi_i = 2.7f;
         float kij = 0.0f;
         float dx = 0.0f, dy = 0.0f, dz = 0.0f, dist = 0.0f;
-	int type_a[6], type_b[6];
+	int *type_a, type_b[6];
 	int polar_a = 0, polar_b = 0;
 	float weight = 1.0f;
 	int flag = 0;
+	float com[3];
 
-	alfa_a = kappa_i / 1.7f;
-        alfa_b = kappa_i / 1.7f;
+	alfa_a = kappa_i / 1.0f;
+        alfa_b = kappa_i / 1.0f;
 
-	if( pocket == 1)
-	{
+
 	        for( i = 0; i < a->n_atoms; i++)
 	        {
 
-	                for( l = 0; l < 6; l++)
-	                {
-	                        type_a[l] = 0;
-	                }
-	                polar_a = 0;
-	                if( a->atoms[i] == 3 )
-	                {
-                                polar_a = 1;
-	                        type_a[3] = 1;
-	                }else if( a->atoms[i] == 2 ){
-                                type_a[4] = 1;
-                                type_a[0] = 1;
-				polar_a = 1;
-                        }else if( a->atoms[i] == 4 ){
-				polar_a = 0;
-				type_a[5] = 1;
-                        }else if( a->atoms[i] == 6 ){
-                                type_a[0] = 1;
-                                type_a[4] = 1;
-                                polar_a = 1;
-			}
+			type_a = types_a[i];
+	
 	                for( l = 0; l < 6; l++)
 	                {
 	                        type_b[l] = 0;
 	                }
 
-	                type_b[type] = 1;
-	                flag = 0;
-	                for( l = 0; l < 6; l++)
-	                {
-	                        if( type_a[l] == type_b[l] && type_a[l] != 0)
-	                        {
-	                          flag = 1;
-	                        }
-	                }
+			type_b[type] = 1;
 
+
+			flag = 0;
+			for( l = 0; l < 6; l++)
+			{
+				if( type_a[l] == type_b[l] && type_a[l] != 0)
+				{
+				  flag = 1;
+				}
+			}
+	  
 	                 if( flag == 1)
-	                 {
+			 {
 	                        dx = a->x[i] - x;
 	                        dy = a->y[i] - y;
 	                        dz = a->z[i] - z;
 	                        dist = (dx*dx)+(dy*dy)+(dz*dz);
-
+			
 	                        kij = exp(-((alfa_a*alfa_b*dist)/(alfa_a+alfa_b)));
-	                        tmpvol = (pi_i*pi_i*kij* cbrt( (3.14159f/(alfa_a+alfa_b))*(3.14159f/(alfa_a+alfa_b))) );
-	                        if( dist < 2.25) /* 1.5 A */
-	                                vol += tmpvol;
+				tmpvol = (pi_i*pi_i*kij* cbrt( (3.14159f/(alfa_a+alfa_b))*(3.14159f/(alfa_a+alfa_b))) );
+				if( dist < 2.9) /* 1.7 A */
+		                        vol += tmpvol;
+	
+			}
+		} /* End of atoms */
 
-	                }
-		}
-
-	}else{
-
-        for( i = 0; i < a->n_atoms; i++)
-        {
-
-		for( l = 0; l < 6; l++)
+		if (type == 5)
 		{
-			type_a[l] = 0;
-		}
+	                for( i = 0; i < a->n_rings; i++)
+	                {	
+				com[0] = com[1] = com[2] = 0.0f;
+				for( l = 0; l < a->rings[i][0]; l++)
+				{
+					com[0] += a->x[a->rings[i][1+l]];
+					com[1] += a->y[a->rings[i][1+l]];
+					com[2] += a->z[a->rings[i][1+l]];
+				}
+				com[0] /= (float) a->rings[i][0];
+				com[1] /= (float) a->rings[i][0];
+				com[2] /= (float) a->rings[i][0];
 
-		polar_a = 0;
-		if( a->atoms[i] == 3 && a->aromatic[i] != 0 &&  get_bonds_p(a,i+1,0) > 2 && has_hydrogens(a,i) == 0 && a->ringer[i] > 0)
-		{
-/*				fprintf(stderr,"Got a aromatic cation for a: %i. %i %i %i %i %i\n",i,a->atoms[i],a->aromatic[i],get_bonds_p(a,i+1,0),a->ringer[i],has_hydrogens(a,i));*/
-			type_a[3] = 1;
-		}
+                                dx = com[0] - x;
+                                dy = com[1] - y;
+                                dz = com[2] - z;
+                                dist = (dx*dx)+(dy*dy)+(dz*dz);
 
-		if( a->gaff_types[i] == OH || a->gaff_types[i] == OW || ( a->atoms[i] == 3 && has_hydrogens(a,i) > 0))
-		{
-			polar_a = 1;
-/*                                if( b->gaff_types[j] == N4)
-	                                type_a[3] = 1;*/
-/*				else*/
-			type_a[0] = 1;
-		}
+                                kij = exp(-((alfa_a*alfa_b*dist)/(alfa_a+alfa_b)));
+                                tmpvol = (pi_i*pi_i*kij* cbrt( (3.14159f/(alfa_a+alfa_b))*(3.14159f/(alfa_a+alfa_b))) );
+                                if( dist < 2.9) /* 1.7 A */
+                                        vol += tmpvol;
 
-		if( a->gaff_types[i] == O || a->gaff_types[i] == OH || ( a->atoms[i] == 3 && has_hydrogens(a,i) == 0))
-		{
-                        polar_a = 1;
-			if( gaus_is_carboxylate(a,i) < 4)
-			{
-				type_a[4] = 1;
-			}else
-				type_a[1] = 1;
-		}
-
-		if( (a->atoms[i] == 1 && a->gaff_types[i] != C) || (a->gaff_types[i] >= 67))
-		{
-			polar_a = 0;
-/*			type_a[2] = 1;*/
-		}
-
-		if( a->ringer[i] > 0)
-		{
-			type_a[5] = 1;
-		}
-
-                for( l = 0; l < 6; l++)
-                {
-                        type_b[l] = 0;
-                }
-
-		type_b[type] = 1;
-
-
-		flag = 0;
-		for( l = 0; l < 6; l++)
-		{
-			if( type_a[l] == type_b[l] && type_a[l] != 0)
-			{
-			  flag = 1;
 			}
 		}
-	  
-                 if( flag == 1)
-		 {
-                        dx = a->x[i] - x;
-                        dy = a->y[i] - y;
-                        dz = a->z[i] - z;
-                        dist = (dx*dx)+(dy*dy)+(dz*dz);
-			
-                        kij = exp(-((alfa_a*alfa_b*dist)/(alfa_a+alfa_b)));
-			tmpvol = (pi_i*pi_i*kij* cbrt( (3.14159f/(alfa_a+alfa_b))*(3.14159f/(alfa_a+alfa_b))) );
-			if( dist < 2.9) /* 1.7 A */
-	                        vol += tmpvol;
-	
-		}
-	}
 
-	} /* No pocket */
 
 	return -vol;
 
@@ -443,7 +479,7 @@ float get_color_intersection_at_point(MOL2 *a, float x, float y, float z, int ty
 
 
 
-float get_color_intersection(MOL2 *a, MOL2 **b2, int pocket1, int pocket2)
+float get_color_intersection(MOL2 *a, MOL2 **b2, int **types_a, int **types_b, int pocket1, int pocket2)
 {
         float vol = 0.0f, tmpvol = 0.0f;
         int i = 0, j = 0, l = 0;
@@ -453,154 +489,22 @@ float get_color_intersection(MOL2 *a, MOL2 **b2, int pocket1, int pocket2)
         const float pi_i = 2.7f;
         float kij = 0.0f;
         float dx = 0.0f, dy = 0.0f, dz = 0.0f, dist = 0.0f;
-	int type_a[6], type_b[6];
-	int polar_a = 0, polar_b = 0;
+	int *type_a, *type_b;
 	float weight = 1.0f;
 	int flag = 0;
         MOL2 *b = NULL;
         b = *b2;
+	float com_a[3], com_b[3];
 
-	alfa_a = kappa_i / 1.7f;
-        alfa_b = kappa_i / 1.7f;
+	alfa_a = kappa_i / 1.0f;
+        alfa_b = kappa_i / 1.0f;
 
         for( i = 0; i < a->n_atoms; i++)
         {
-
-		if( pocket1 == 1)
-		{
-                        for( l = 0; l < 6; l++)
-                                type_a[l] = 0;
-
-                        polar_a = 0;
-
-                        if( a->atoms[i] == 3 )
-                        {
-                                polar_a = 1;
-                                type_a[3] = 1;
-                        }else if( a->atoms[i] == 2 ){
-                                type_a[4] = 1;
-/*                                type_a[0] = 1;*/
-                                polar_a = 1;
-                        }else if( a->atoms[i] == 4 ){
-                                polar_a = 0;
-                                type_a[5] = 1;
-                        }else if( a->atoms[i] == 6 ){
-                                type_a[0] = 1;
-/*                                type_a[4] = 1;*/
-                                polar_a = 1;
-                        }
-
-		}else{
-			for( l = 0; l < 6; l++)
-				type_a[l] = 0;
-
-			polar_a = 0;
-			if( a->atoms[i] == 3 && a->aromatic[i] != 0 &&  get_bonds_p(a,i+1,0) > 2 && has_hydrogens(a,i) == 0 && a->ringer[i] > 0)
-				type_a[3] = 1;
-
-			if( a->gaff_types[i] == OH || a->gaff_types[i] == OW || ( a->atoms[i] == 3 && has_hydrogens(a,i) > 0))
-			{
-				polar_a = 1;
-                                if( a->gaff_types[i] == N4)
-	                                type_a[3] = 1;
-				else
-					type_a[0] = 1;
-			}
-
-			if( a->gaff_types[i] == O || a->gaff_types[i] == OH || ( a->atoms[i] == 3 && has_hydrogens(a,i) == 0))
-			{
-                                polar_a = 1;
-				if( gaus_is_carboxylate(a,i) < 4)
-				{
-					type_a[4] = 1;
-				}else
-					type_a[1] = 1;
-			}
-
-			if( (a->atoms[i] == 1 && a->gaff_types[i] != C) || (a->gaff_types[i] >= 67))
-			{
-				polar_a = 0;
-/*				type_a[2] = 1;*/
-			}
-
-			if( a->ringer[i] > 0)
-			{
-				type_a[5] = 1;
-			}
-
-		}
+	      type_a = types_a[i];
 	      for( j = 0; j < b->n_atoms; j++)
 	      {
-
-		  if( pocket2 == 1)
-		  {
-
-                        for( l = 0; l < 6; l++)
-                                type_b[l] = 0;
-                        polar_b = 0;
-                        if( b->atoms[i] == 3 )
-                        {
-                                polar_b = 1;
-                                type_b[3] = 1;
-                        }else if( b->atoms[i] == 2 ){
-                                type_b[4] = 1;
-                                type_b[0] = 1;
-                                polar_b = 1;
-                        }else if( b->atoms[i] == 4 ){
-                                polar_b = 0;
-                                type_b[5] = 1;
-                        }else if( b->atoms[i] == 6 ){
-                                type_b[0] = 1;
-                                type_b[4] = 1;
-                                polar_b = 1;
-                        }
-
-		  }else{
-
-			for( l = 0; l < 6; l++)
-			{
-				type_b[l] = 0;
-			}
-
-			polar_b = 0;
-
-                        if( b->atoms[j] == 3 && b->aromatic[j] != 0 &&  get_bonds_p(b,j+1,0) > 2 && has_hydrogens(b,j) == 0 && b->ringer[j] > 0)
-                        {
-                                type_b[3] = 1;
-                        }
-
-
-			if( b->gaff_types[j] == OH || b->gaff_types[j] == OW || ( b->atoms[j] == 3 && has_hydrogens(b,j) > 0))
-			{
-				polar_b = 1;
-				if( b->gaff_types[j] == N4)
-					type_b[3] = 1;
-				else
-				 	type_b[0] = 1;
-			}
-
-			if( b->gaff_types[j] == O || b->gaff_types[j] == OH || ( b->atoms[j] == 3 && has_hydrogens(b,j) == 0))
-			{
-                                polar_b = 1;
-
-                                if( gaus_is_carboxylate(b,j) < 4){
-                                        type_b[4] = 1;
-                                }else
-					type_b[1] = 1;
-			}
-
-			if( (b->atoms[j] == 1 && b->gaff_types[j] != C) || b->gaff_types[j] >= 67)
-			{
-                                polar_b = 0;
-
-/*				type_b[2] = 1;*/
-			}
-
-			if( b->ringer[j] > 0)
-			{
-				type_b[5] = 1;
-			}
-                  }
+		 type_b = types_b[j];
 
 		 flag = 0;
 		 for( l = 0; l < 6; l++)
@@ -608,10 +512,7 @@ float get_color_intersection(MOL2 *a, MOL2 **b2, int pocket1, int pocket2)
 			if( type_a[l] == type_b[l] && type_a[l] != 0)
 			{
 			  flag = 1;
-			}/*else if( polar_a != polar_b ){
-			  flag = 2;
-			  break;
-			}*/
+			}
 		 }
 	  
                  if( flag == 1)
@@ -623,7 +524,7 @@ float get_color_intersection(MOL2 *a, MOL2 **b2, int pocket1, int pocket2)
 				
                         kij = exp(-((alfa_a*alfa_b*dist)/(alfa_a+alfa_b)));
 			tmpvol = (pi_i*pi_i*kij* cbrt( (3.14159f/(alfa_a+alfa_b))*(3.14159f/(alfa_a+alfa_b))) );
-			if( dist < 2.25)
+			if( dist < 2.7)
 			{
 	                        vol += tmpvol;
 	                        b->grads_X[j] += (2.0f*alfa_a*alfa_b*dx*tmpvol)/(alfa_a+alfa_b);
@@ -647,7 +548,58 @@ float get_color_intersection(MOL2 *a, MOL2 **b2, int pocket1, int pocket2)
 		}
 	      }
 	}
-	
+
+
+        for( i = 0; i < a->n_rings; i++)
+        {
+                com_a[0] = com_a[1] = com_a[2] = 0.0f;
+                for( l = 0; l < a->rings[i][0]; l++)
+                {
+                        com_a[0] += a->x[a->rings[i][1+l]];
+                        com_a[1] += a->y[a->rings[i][1+l]];
+                        com_a[2] += a->z[a->rings[i][1+l]];
+                }
+                com_a[0] /= (float) a->rings[i][0];
+                com_a[1] /= (float) a->rings[i][0];
+                com_a[2] /= (float) a->rings[i][0];
+
+
+		for( j = 0; j < b->n_rings; j++)
+		{
+
+	                com_b[0] = com_b[1] = com_b[2] = 0.0f;
+	                for( l = 0; l < b->rings[j][0]; l++)
+	                {
+	                        com_b[0] += b->x[b->rings[j][1+l]];
+	                        com_b[1] += b->y[b->rings[j][1+l]];
+	                        com_b[2] += b->z[b->rings[j][1+l]];
+	                }
+	                com_b[0] /= (float) b->rings[j][0];
+	                com_b[1] /= (float) b->rings[j][0];
+	                com_b[2] /= (float) b->rings[j][0];
+
+
+	                dx = com_a[0] - com_b[0];
+	                dy = com_a[1] - com_b[1];
+	                dz = com_a[2] - com_b[2];
+	                dist = (dx*dx)+(dy*dy)+(dz*dz);
+
+		        kij = exp(-((alfa_a*alfa_b*dist)/(alfa_a+alfa_b)));
+		        tmpvol = (pi_i*pi_i*kij* cbrt( (3.14159f/(alfa_a+alfa_b))*(3.14159f/(alfa_a+alfa_b))) );
+		        if( dist < 2.9)
+		        {
+		                vol += tmpvol;
+	                        for( l = 0; l < b->rings[j][0]; l++)
+				{
+		                	b->grads_X[b->rings[j][1+l]]+=((2.0f*alfa_a*alfa_b*dx*tmpvol)/(alfa_a+alfa_b))/b->rings[j][0]; 
+			                b->grads_Y[b->rings[j][1+l]]+=((2.0f*alfa_a*alfa_b*dy*tmpvol)/(alfa_a+alfa_b))/b->rings[j][0];
+			                b->grads_Z[b->rings[j][1+l]]+=((2.0f*alfa_a*alfa_b*dz*tmpvol)/(alfa_a+alfa_b))/b->rings[j][0];
+				}
+		        }
+
+
+		}
+        }
 
 
 	*b2 = b;
@@ -994,7 +946,8 @@ int gau_update_hessian(float hessian[6][6], float p[6], float y[6], float alfa)
  *
  */
 float gau_get_alpha_with_linear_search(MOL2 *template, MOL2 **mmol, float forces[6], float product[6],
-				   float last_energy, float new_gradient[6], float *new_energy, int pocket)
+				   float last_energy, float new_gradient[6], float *new_energy, 
+				   int **types1, int **types2, int pocket)
 {
 
 	MOL2 *mol = NULL;
@@ -1048,7 +1001,7 @@ float gau_get_alpha_with_linear_search(MOL2 *template, MOL2 **mmol, float forces
                 }
 
 		*new_energy = get_volumen_intersection(template, &mol, pocket, 0);
-		*new_energy += get_color_intersection(template,&mol, pocket, 0);
+		*new_energy += get_color_intersection(template,&mol,types1,types2, pocket, 0);
 
 		grad_to_rigid(mol, force, torque);
 
@@ -1174,7 +1127,7 @@ float gau_get_alpha_with_linear_search_ingrid(MOL2 **mmol,
  *	@param defsteps Number of steps to perform
  *	@return 0 on success
  */
-int gau_minimizer_bfgs(MOL2 *template, MOL2 **mymol, int defsteps, int pocket)
+int gau_minimizer_bfgs(MOL2 *template, MOL2 **mymol, int defsteps, int **types1, int **types2, int pocket)
 {
 	MOL2 *mol = NULL;
 	int n = 0;
@@ -1208,7 +1161,7 @@ int gau_minimizer_bfgs(MOL2 *template, MOL2 **mymol, int defsteps, int pocket)
         }
 
 	energy0 = get_volumen_intersection(template, &mol, pocket, 0);
-	energy0 += get_color_intersection(template,&mol, pocket, 0);
+	energy0 += get_color_intersection(template,&mol, types1, types2, pocket, 0);
 
 	grad_to_rigid(mol, force, torque);
 	original_gradient[0] = force[0];
@@ -1249,7 +1202,7 @@ int gau_minimizer_bfgs(MOL2 *template, MOL2 **mymol, int defsteps, int pocket)
 		energy1 = 0.0f;
 		new_energy = 0.0f;
 		alfa = gau_get_alpha_with_linear_search(template, &mol, gradient, product,
-						    prev_energy, new_gradient, &new_energy, pocket);
+						    prev_energy, new_gradient, &new_energy, types1, types2, pocket);
 
 
 		for ( j = 0; j < 6; ++j)
@@ -1608,6 +1561,7 @@ float get_color_volume_intersection_fromgrid(MOL2 *mol, float ****grids, int **t
         register int u0,  v0,  w0;
         register int u1,  v1,  w1;
 	float tmpe = 0.0f;
+	float com[3];
 
 	real_atoms = mol->n_atoms;
 
@@ -1636,7 +1590,8 @@ float get_color_volume_intersection_fromgrid(MOL2 *mol, float ****grids, int **t
 
         energy = 0.0f;
         e1 = e2 = 0.0f;
-        for ( i = 0; i < real_atoms; ++i) {
+        for ( i = 0; i < real_atoms; ++i) 
+	{
                 e1 = 0.0f;
 		e2 = 0.0f;
                 x = mol->x[i];
@@ -1656,7 +1611,8 @@ float get_color_volume_intersection_fromgrid(MOL2 *mol, float ****grids, int **t
 
                 if ( types[i] != -1 && (ix >= 1 && iy >= 1 &&
                                         iz >= 1 && ix < max_x - 1 && iy < max_y - 1 &&
-                                        iz < max_z - 1)) {
+                                        iz < max_z - 1)) 
+		{
 
                         xd = min_grid[0];
                         yd = min_grid[1];
@@ -1668,7 +1624,7 @@ float get_color_volume_intersection_fromgrid(MOL2 *mol, float ****grids, int **t
                         u1  = (u0 = (int)(u = (z - zd) / spacing)) + 1;
                         p1u = 1.0L - (p0u = u - (float)u0);
 
-			for( l = 0; l < 6; l++)
+			for( l = 0; l < 5; l++)
 			{
 				tmpe = 0.0f;
 				if ( types[i][l] != 0)
@@ -1690,6 +1646,62 @@ float get_color_volume_intersection_fromgrid(MOL2 *mol, float ****grids, int **t
                 }
         }
 
+	for( i = 0; i < mol->n_rings; i++)
+	{
+	        com[0] = com[1] = com[2] = 0.0f;
+	        for( l = 0; l < mol->rings[i][0]; l++)
+	        {
+	                com[0] += mol->x[mol->rings[i][1+l]];
+	                com[1] += mol->y[mol->rings[i][1+l]];
+	                com[2] += mol->z[mol->rings[i][1+l]];
+	        }
+	        com[0] /= (float) mol->rings[i][0];
+	        com[1] /= (float) mol->rings[i][0];
+	        com[2] /= (float) mol->rings[i][0];
+
+                ix = (int)roundf((com[0] - min_grid[0]) / spacing);
+                iy = (int)roundf((com[1] - min_grid[1]) / spacing);
+                iz = (int)roundf((com[2] - min_grid[2]) / spacing);
+
+                if ( !(ix >= 1 && iy >= 1 &&
+                       iz >= 1 && ix < max_x - 1 && iy < max_y - 1 &&
+                       iz < max_z - 1)) {
+                        return 9999.9f;
+                }
+
+
+                if ( (ix >= 1 && iy >= 1 &&
+                   iz >= 1 && ix < max_x - 1 && iy < max_y - 1 &&
+                   iz < max_z - 1))
+                {
+
+                        xd = min_grid[0];
+                        yd = min_grid[1];
+                        zd = min_grid[2];
+                        w1  = (w0 = (int)(w = (x - xd) / spacing )) + 1;
+                        p1w = 1.0L - (p0w = w - (float)w0);
+                        v1  = (v0 = (int)(v = (y - yd) / spacing)) + 1;
+                        p1v = 1.0L - (p0v = v - (float)v0);
+                        u1  = (u0 = (int)(u = (z - zd) / spacing)) + 1;
+                        p1u = 1.0L - (p0u = u - (float)u0);
+
+                        tmpe = 0.0f;
+                        kpot = 11; /* Rings */
+                        tmpe = p1u * p1v * p1w * grids[kpot][ w0 ][ v0 ][ u0 ];
+			tmpe += p0u * p1v * p1w * grids[kpot][ w0 ][ v0 ][ u1 ];
+			tmpe += p1u * p0v * p1w * grids[kpot][ w0 ][ v1 ][ u0 ];
+			tmpe += p0u * p0v * p1w * grids[kpot][ w0 ][ v1 ][ u1 ];
+			tmpe += p1u * p1v * p0w * grids[kpot][ w1 ][ v0 ][ u0 ];
+			tmpe += p0u * p1v * p0w * grids[kpot][ w1 ][ v0 ][ u1 ];
+			tmpe += p1u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u0 ];
+			tmpe += p0u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u1 ];
+                        if( tmpe < e1);
+                           e1 = tmpe;
+                }
+                energy += e1;
+
+
+	}
 
         return energy;
 }

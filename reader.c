@@ -52,6 +52,8 @@
 
 #define MAX_BUFFER 1024
 
+#define MIN(a,b) (((a)<(b))?(a):(b))
+#define MAX(a,b) (((a)>(b))?(a):(b))
 
 /**
  *
@@ -242,6 +244,7 @@ int PDB_reader(MOL2 **mymol, char *finput_name, int import)
 
 	i = 0;
 	mols->n_atoms = molecules;
+        mols->comment = (char *) calloc(sizeof(char),1024);
 	mols->x = (float*)calloc(sizeof(float), mols[i].n_atoms);
 	mols->y = (float*)calloc(sizeof(float), mols[i].n_atoms);
 	mols->z = (float*)calloc(sizeof(float), mols[i].n_atoms);
@@ -250,6 +253,8 @@ int PDB_reader(MOL2 **mymol, char *finput_name, int import)
 	mols->atoms = (int*)calloc(sizeof(int), mols[i].n_atoms);
 	mols->ringer = (int*)calloc(sizeof(int), mols[i].n_atoms);
 	mols->aromatic = (int*)calloc(sizeof(int), mols[i].n_atoms);
+	mols->rings = (int**)calloc(sizeof(int*), 100);  /* 100 rings seems to be high enough */
+	mols->n_rings = 0;
 	mols->bond_dist = (float*)calloc(sizeof(float), mols[i].n_atoms * 8);
 	mols->grads_X = (float*)calloc(sizeof(float), mols[i].n_atoms);
 	mols->grads_Y = (float*)calloc(sizeof(float), mols[i].n_atoms);
@@ -263,10 +268,12 @@ int PDB_reader(MOL2 **mymol, char *finput_name, int import)
         mols->res_num = (int*)calloc(sizeof(int*), mols->n_atoms + 10);
         mols->res_names = (char**)calloc(sizeof(char**), mols->n_atoms + 1);
         mols->atom_names = (char**)calloc(sizeof(char**), mols->n_atoms + 1);
+        mols->atom_types_sybyl = (char**)calloc(sizeof(char**), mols->n_atoms + 1);
         for( i = 0; i < mols->n_atoms; i++)
         {
                 mols->res_names[i] = (char *) calloc(sizeof(char*),4);
                 mols->atom_names[i] = (char *) calloc(sizeof(char*),4);
+                mols->atom_types_sybyl[i] = (char *) calloc(sizeof(char*),6);
         }
         i = 0;
         mols->res_type = (int*)calloc(sizeof(int*), mols->n_atoms + 10);
@@ -499,6 +506,7 @@ int mol_percieve(MOL2 **mymol, int import)
 	float r6, r12;
 
 	int cur_angle = 0;
+	int **rings = NULL;
 
 	mols = *mymol;
 
@@ -508,7 +516,7 @@ int mol_percieve(MOL2 **mymol, int import)
 	angleflag = 0;
 	verboseflag = 0;
 
-
+	rings = mols->rings;
 
 	if ( import != 0) {
 
@@ -910,7 +918,9 @@ int mol_percieve(MOL2 **mymol, int import)
  *****************************************************************************/
 
 		if ( mols->n_atoms <= 300)
-			get_number_of_rings2(mols[0], &ringer, &aro);
+		{
+			mols->n_rings = get_number_of_rings2(mols[0], &ringer, &aro, &rings);
+		}
 
 /*****************************************************************************
  *
@@ -1860,13 +1870,26 @@ int update_default_conformer(MOL2 **mymol)
 	return 0;
 }
 
-int MultiMOL2_reader(MOL2 **mymol, char *finput_name)
+int MultiMOL2_reader(MOL2 ***mymol, char *finput_name)
 {
 
-	MOL2 *mol = NULL;
+	MOL2 *mols = NULL;
 	char *line = NULL;
 	FILE *input = NULL;
+	MOL2 **mmol = NULL;
+	int nmols = 0, current_mol = 0, state = -1;
+	int natoms = 0, nbonds = 0, current_atom =0, current_bond = 0;
+	int id1 = 0, id2 = 0, i = 0;
+	char *title = NULL;
 
+        char tmp_atom[MAX_BUFFER];
+        char tmp_bond[MAX_BUFFER];
+        char tmp_radius[6];
+        char tmp_charge[10];
+        char myx[12];
+        char myy[12];
+        char myz[12];
+        char tmp_type[12];
 
         if ( (input = fopen(finput_name, "r")) == NULL) {
                 fprintf(stderr, "Error. Cant open file %s.\n", finput_name);
@@ -1882,7 +1905,882 @@ int MultiMOL2_reader(MOL2 **mymol, char *finput_name)
                 return(-2);
         }
 
+	/* @<TRIPOS>MOLECULE */
+	while ( fgets(line, MAX_BUFFER, input))
+	{
+		if( line[0] == '@' && line[1] == '<' && line[9] == 'M' && line[10] == 'O' && line[11] == 'L')
+		{
+			++nmols;
+		}
+	}
+
+	#ifdef DEBUG
+		fprintf(stderr,"Reading %i molecules from the database\n",nmols);
+		fflush(stderr);
+	#endif
+	rewind(input);
+	
+	mmol = *mymol;
+
+	mmol = (MOL2 **) calloc(sizeof(MOL2 *), nmols);
+	for( i = 0; i < nmols; i++)
+	{
+		mmol[i] = (MOL2 *) calloc(sizeof(MOL2),1);
+	}
+
+        *mymol = mmol;
+	mols = mmol[0];
+
+        while ( fgets(line, MAX_BUFFER, input))
+        {
+                if( line[0] == '@' && line[1] == '<' && line[9] == 'M' && line[10] == 'O' && line[11] == 'L')
+                {
+			++current_mol;
+			current_atom = 0; current_bond = 0;
+			mols = mmol[current_mol-1];
+			state = -1;
+			fgets(line, MAX_BUFFER, input); /* Title should be processed */
+			mols->comment = (char *) calloc(sizeof(char),1024);
+			line[strlen(line)-1] = '\0';
+			strncpy(mols->comment,line,49);
+
+			fgets(line, MAX_BUFFER, input); /* Natoms and nbonds */
+			sscanf(line,"%d %d %*d %*d %*d",&natoms,&nbonds);
+			#ifdef DEBUG
+				fprintf(stderr,"Reading %i atoms and %i bonds\n",natoms,nbonds);
+				fflush(stderr);
+			#endif
+
+		        mols->n_atoms = natoms;
+			mols->n_bonds = nbonds;
+		        mols->x = (float*)calloc(sizeof(float), mols->n_atoms);
+		        mols->y = (float*)calloc(sizeof(float), mols->n_atoms);
+		        mols->z = (float*)calloc(sizeof(float), mols->n_atoms);
+		        mols->pcharges = (float*)calloc(sizeof(float), mols->n_atoms);
+		        mols->radius = (float*)calloc(sizeof(float), mols->n_atoms);
+		        mols->atoms = (int*)calloc(sizeof(int), mols->n_atoms);
+		        mols->ringer = (int*)calloc(sizeof(int), mols->n_atoms);
+		        mols->aromatic = (int*)calloc(sizeof(int), mols->n_atoms);
+ 		        mols->rings = (int**)calloc(sizeof(int*), 100);  /* 100 rings seems to be high enough */
+			mols->n_rings = 0;
+		        mols->bond_dist = (float*)calloc(sizeof(float), nbonds + 2);
+		        mols->grads_X = (float*)calloc(sizeof(float), mols->n_atoms);
+		        mols->grads_Y = (float*)calloc(sizeof(float), mols->n_atoms);
+		        mols->grads_Z = (float*)calloc(sizeof(float), mols->n_atoms);
+		        mols->backbone = (int*)calloc(sizeof(int), mols->n_atoms);
+		        mols->selection = (int*)calloc(sizeof(int), mols->n_atoms + 10);
+		        mols->fragment_flag = (int*)calloc(sizeof(int), mols->n_atoms);
+		        mols->conformers = (CONFORMER*)calloc(sizeof(CONFORMER), 1);
+		        mols->n_fragments = 0;
+
+		        mols->res_num = (int*)calloc(sizeof(int*), mols->n_atoms + 10);
+		        mols->res_names = (char**)calloc(sizeof(char**), mols->n_atoms + 1);
+		        mols->atom_names = (char**)calloc(sizeof(char**), mols->n_atoms + 1);
+		        mols->atom_types_sybyl = (char**)calloc(sizeof(char**), mols->n_atoms + 1);
+
+		        mols->bonds = (int*)calloc(sizeof(int), mols->n_bonds);
+		        mols->bond_a1 = (int*)calloc(sizeof(int), mols->n_bonds);
+		        mols->bond_a2 = (int*)calloc(sizeof(int), mols->n_bonds);
+		        mols->bond_dist = (float*)calloc(sizeof(float), mols->n_bonds);
+
+		        for( i = 0; i < mols->n_atoms; i++)
+		        {
+		                mols->res_names[i] = (char *) calloc(sizeof(char*),5);
+		                mols->atom_names[i] = (char *) calloc(sizeof(char*),5);
+		                mols->atom_types_sybyl[i] = (char *) calloc(sizeof(char*),6);
+		        }
+		        mols->res_type = (int*)calloc(sizeof(int*), mols->n_atoms + 10);
+
+			/* For compatibility reasons */
+		        mols->nconformers = 1;
+		        mols->default_conformer = 0;
+	                mols->conformers[0].x = (float*)calloc(sizeof(float), mols->n_atoms);
+	                mols->conformers[0].y = (float*)calloc(sizeof(float), mols->n_atoms);
+	                mols->conformers[0].z = (float*)calloc(sizeof(float), mols->n_atoms);
+	                mols->conformers[0].pcharges = (float*)calloc(sizeof(float), mols->n_atoms);
+	                mols->conformers[0].radius = (float*)calloc(sizeof(float), mols->n_atoms);
+		        mols->gaff_types = (int*)calloc(sizeof(int), mols->n_atoms + 1);
+		        mols->ism_types = (int *)calloc(sizeof(int), mols->n_atoms + 1);
+		        mols->ism_selection = (int *)calloc(sizeof(int), mols->n_atoms + 1);
+
+			continue;
+                }
+
+		if( line[0] == '@' && line[1] == '<' && line[9] == 'A' && line[10] == 'T' && line[11] == 'O')
+		{
+			state = 0;
+			continue;
+		}
+	
+                if( line[0] == '@' && line[1] == '<' && line[9] == 'B' && line[10] == 'O' && line[11] == 'N')
+                {
+                        state = 1;
+			continue;
+                }
+
+
+		if( state == 0)
+		{
+			sscanf(line, "%*i %4s %s %s %s %s %*d %*s %10s", tmp_atom, myx, myy, myz, tmp_type, tmp_charge);
+
+                        mols->pcharges[current_atom] = atof(tmp_charge);
+                        mols->radius[current_atom] = 0;
+
+			strncpy(mols->atom_types_sybyl[current_atom],tmp_type,5);
+
+                        if ( tmp_atom[0] == 'C' && ( tmp_atom[1] != 'l' && tmp_atom[1] != 'L'))
+                                mols->atoms[current_atom] = 1;
+                        else if ( tmp_atom[0] == 'O')
+                                mols->atoms[current_atom] = 2;
+                        else if ( tmp_atom[0] == 'N')
+                                mols->atoms[current_atom] = 3;
+                        else if ( tmp_atom[0] == 'H')
+                                mols->atoms[current_atom] = 4;
+                        else if ( tmp_atom[0] == 'P')
+                                mols->atoms[current_atom] = 5;
+                        else if ( tmp_atom[0] == 'S')
+                                mols->atoms[current_atom] = 6;
+                        else if ( tmp_atom[0] == 'I')
+                                mols->atoms[current_atom] = 7;
+                        else if ( tmp_atom[0] == 'B' && (tmp_atom[1] == 'r' || tmp_atom[1] == 'R'))
+                                mols->atoms[current_atom] = 8;
+                        else if ( tmp_atom[0] == 'C' && (tmp_atom[1] == 'l' || tmp_atom[1] == 'L'))
+                                mols->atoms[current_atom] = 9;
+                        else if( tmp_atom[0] == 'F' &&  tmp_atom[1] != 'E' && tmp_atom[1] != 'e')
+                                mols->atoms[current_atom] = 10;
+                        else if(tmp_atom[0] == 'Z' && ( tmp_atom[1] == 'N' || tmp_atom[1] == 'n' ))
+                                mols->atoms[current_atom] = 100;
+                        else if(tmp_atom[0] == 'M' && (tmp_atom[1] == 'N' || tmp_atom[1] == 'n') )
+                                mols->atoms[current_atom] = 101;
+                        else if(tmp_atom[0] == 'M' && (tmp_atom[1] == 'G' || tmp_atom[1] == 'g' ))
+                                mols->atoms[current_atom] = 102;
+                        else if(tmp_atom[0] == 'C' && tmp_atom[1] == '0')
+                                mols->atoms[current_atom] = 105;
+                        else if(tmp_atom[0] == 'F' && (tmp_atom[1] == 'E' || tmp_atom[1] == 'e'))
+                                mols->atoms[current_atom] = 106;
+                        else if(tmp_atom[0] == 'K')
+                                mols->atoms[current_atom] = 103;
+
+                        else if(tmp_atom[0] == 'N' && (tmp_atom[1] == 'A' || tmp_atom[1] == 'a'))
+                                mols->atoms[current_atom] = 104;
+                        else{
+
+                                if ( tmp_atom[1] == 'H')
+                                        mols->atoms[current_atom] = 4;
+                                else{
+                                        mols->atoms[current_atom] = 11;
+                                        mols->gaff_types[current_atom] = C3;
+                                        fprintf(stderr, "Reader %i: Error. Do not know the atom type $%s$\n", __LINE__,tmp_atom);
+                                }
+                        }
+
+                        mols->res_type[current_atom] = -1; /* We dont use MOL2 types */
+
+/*                        strncpy(mols->res_names[current_atom],res_type,3);*/
+                        strncpy(mols->atom_names[current_atom],tmp_atom,MIN(strlen(tmp_atom),4));
+
+                        mols->x[current_atom] = atof(myx);
+                        mols->y[current_atom] = atof(myy);
+                        mols->z[current_atom] = atof(myz);
+
+                        mols->conformers[0].x[current_atom] = atof(myx);
+                        mols->conformers[0].y[current_atom] = atof(myy);
+                        mols->conformers[0].z[current_atom] = atof(myz);
+                        mols->conformers[0].pcharges[current_atom] = 0;
+
+                        ++current_atom;
+
+                        if( current_atom >= mols->n_atoms)
+                        {
+                                state = -1;
+                        }
+
+
+
+		}else if( state == 1){
+			sscanf(line,"%*i %d %d %3s",&id1,&id2, tmp_bond);
+
+			if( tmp_bond[0] == '1')
+				mols->bonds[current_bond] = 1;
+			else if( tmp_bond[0] == '2')
+                                mols->bonds[current_bond] = 2;
+                        else if( tmp_bond[0] == '3')
+                                mols->bonds[current_bond] = 3;
+                        else if( tmp_bond[0] == 'a' && tmp_bond[1] == 'r')
+                                mols->bonds[current_bond] = 2;
+                        else if( tmp_bond[0] == 'a' && tmp_bond[1] == 'm')
+                                mols->bonds[current_bond] = 1;
+
+			mols->bond_a1[current_bond] = id1;
+			mols->bond_a2[current_bond] = id2;
+			mols->bond_dist[current_bond] = 0;
+
+                        ++current_bond;
+
+                        if( current_bond >= mols->n_bonds)
+                        {
+				mol_percieve_light(&mols); /* Just atom types, rings, aromaticity */
+                                state = -1;
+                        }
+
+		}
+
+        }
 
 	fclose(input);
 	free(line);
+	return nmols;
+}
+/**
+ *
+ *	@brief Light version of percieve connectivity of the molecule (rings, aromaticity, atom types, etc.)
+ *	@author Alvaro Cortes Cabrera <acortes@cbm.uam.es>
+ *
+ *	@param mymol MOL2 structure which contains the molecule
+ *	@return 0 on success
+ *
+ */
+int mol_percieve_light(MOL2 **mymol)
+{
+
+	MOL2 *mols = NULL;
+	int i = 0;
+	int i2 = 0;
+	int j = 0;
+	int k = 0;
+	int l = 0;
+
+	int t1, t2, t3, t4;
+	double bondE = 0;
+	double angleE = 0;
+	double torE = 0;
+	double totalE = 0;
+	double mytot;
+	double vec1[3], vec2[3];
+	double uvec1[3], uvec2[3];
+	double *lvec1, *lvec2;
+	double tor1;
+	double tor2;
+	double tor3;
+	float thetha;
+	int ttor = 0;
+	int ewg = 0;
+	int ewg2 = 0;
+	int bondis = 0;
+	int *ringer = NULL;
+	int *aro = NULL;
+
+	float rx = 0.0f, ry = 0.0f, rz = 0.0f;
+	int step = 0;
+	int cpair = 0;
+	int *vecinos;
+	int *vecinos2;
+	int vecinos4[16];
+	int bonds1, bonds2, bonds3;
+	int flag = 0;
+	int flag2 = 0;
+	int flag3 = 0;
+	float dist = 0.0f;
+
+
+	int verboseflag;
+	int matchs[3], nmatchs = 0;
+
+
+	int *tor_type;
+
+	float dx, dy, dz;
+	float r2, r;
+
+	float *xc, *yc, *zc;
+	float *xb, *yb, *zb;
+
+	double A, B;
+	double epsilon;
+	double vdwE;
+	float r6, r12;
+
+	int **rings = NULL;
+
+	mols = *mymol;
+	verboseflag = 0;
+
+	rings = mols->rings;
+	ringer = mols->ringer;
+	aro =  mols->aromatic;
+
+
+/******************************************************************************
+ *
+ *
+ *                              DETECT RINGS
+ *
+ *
+ *****************************************************************************/
+
+	if ( mols->n_atoms <= 300)
+	{
+		mols->n_rings = get_number_of_rings2(mols[0], &ringer, &aro, &rings);
+	}
+
+/*****************************************************************************
+ *
+ *
+ *                                ASSIGN TYPES
+ *
+ *
+ ****************************************************************************/
+
+	for (i = 0; i < mols->n_atoms; ++i)
+		mols->gaff_types[i] = -1;
+
+
+        vecinos = (int *) calloc(sizeof(int *), mols->n_atoms+1);
+        vecinos2 = (int *) calloc(sizeof(int *), mols->n_atoms+1);
+
+	for (i = 0; i < mols->n_atoms; ++i) 
+	{
+			/* Get vecinos */
+			for (j = 0; j < mols->n_atoms; ++j) 
+			{
+				vecinos[j] = 0;
+				vecinos2[j] = 0;
+			}
+			k = 0;
+			for (j = 0; j < mols->n_bonds; ++j) {
+				if ( mols->bond_a1[j] == (i + 1)) {
+					vecinos[k] = mols->bond_a2[j] - 1;
+					vecinos2[k] = mols->bonds[j];
+					k++;
+				}else if ( mols->bond_a2[j] == (i + 1)) {
+					vecinos[k] = mols->bond_a1[j] - 1;
+					vecinos2[k] = mols->bonds[j];
+					k++;
+				}
+			}
+
+			/* Assign types */
+
+			if ( mols->atoms[i] == 1 ) 
+			{
+
+				if ( mols->aromatic[i] == 1) {
+					mols->gaff_types[i] = CA;
+					if ( verboseflag == 1)
+						printf("%i tipo CA.\n", i);
+				}else{
+					if ( k == 4) {
+
+						if ( mols->ringer[i] == 3) {
+							mols->gaff_types[i] = CX;
+							if ( verboseflag == 1)
+								printf("%i tipo CX.\n", i);
+						}else if ( mols->ringer[i] == 4) {
+							mols->gaff_types[i] = CY;
+							if ( verboseflag == 1)
+								printf("%i tipo CY.\n", i);
+						}else{
+							mols->gaff_types[i] = C3;
+							if ( verboseflag == 1)
+								printf("%i tipo C3.\n", i);
+						}
+					}else if ( k == 3) {
+						if ( mols->ringer[i] == 3) {
+							mols->gaff_types[i] = CU;
+							if ( verboseflag == 1)
+								printf("%i tipo CU.\n", i);
+						}else if ( mols->ringer[i] == 4) {
+							mols->gaff_types[i] = CV;
+							if ( verboseflag == 1)
+								printf("%i tipo CV.\n", i);
+						}else{
+							ewg = 0;
+							ewg += get_number_bond_by_atom(mols[0], i + 1, 2, 2);
+							ewg += get_number_bond_by_atom(mols[0], i + 1, 2, 6);
+							ewg2 = get_number_bond_by_atom(mols[0], i + 1, 2, 3);
+							if ( ewg != 0) {
+								mols->gaff_types[i] = C;
+								if ( verboseflag == 1)
+									printf("%i tipo C.\n", i);
+							}else if ( ewg2 == 3) {
+								mols->gaff_types[i] = CZ;
+								if ( verboseflag == 1)
+									printf("%i tipo CZ.\n", i);
+							}else{
+								ewg = get_bonds(mols[0], i + 1, 2);
+								ewg2 = get_bonds(mols[0], i + 1, 1);
+								if ( ewg > 0 && ewg2 > 0) {
+									ewg = 0;
+									for (k = 0; k < 4; ++k)
+										if ( vecinos2[k] == 1)
+											ewg += get_bonds(mols[0], vecinos[k] + 1, 2);
+									if ( ewg > 0) {
+
+										if ( mols->ringer[i] != 0) {
+											mols->gaff_types[i] = CC;
+											if ( verboseflag == 1)
+												printf("%i tipo CC.\n", i);
+										}else{
+											mols->gaff_types[i] = CE;
+											if ( verboseflag == 1)
+												printf("%i tipo CE.\n", i);
+										}
+									}else{
+										mols->gaff_types[i] = C2;
+										if ( verboseflag == 1)
+											printf("%i tipo C2.\n", i);
+									}
+								}else{
+									mols->gaff_types[i] = C2;
+									if ( verboseflag == 1)
+										printf("%i tipo C2.\n", i);
+								}
+
+							}
+						}
+					}else if (k == 2) {
+						ewg = get_bonds(mols[0], i + 1, 2);
+						ewg2 = get_bonds(mols[0], i + 1, 1);
+						if ( ewg > 0 && ewg2 > 0) {
+							ewg = 0;
+							for (k = 0; k < 4; ++k)
+								if ( vecinos2[k] == 1)
+									ewg += get_bonds(mols[0], vecinos[k] + 1, 2);
+
+							if ( ewg > 0) {
+								mols->gaff_types[i] = CG;
+								if ( verboseflag == 1)
+									printf("%i tipo CG.\n", i);
+							}else{
+								mols->gaff_types[i] = C1;
+								if ( verboseflag == 1)
+									printf("%i tipo C1.\n", i);
+							}
+						}else{
+							mols->gaff_types[i] = C1;
+							if ( verboseflag == 1)
+								printf("%i tipo C1.\n", i);
+						}
+					}else if (k == 1) {
+						mols->gaff_types[i] = C1;
+						if ( verboseflag == 1)
+							printf("%i tipo C1.\n", i);
+					}else                 if ( verboseflag == 1)
+						printf("Carbon Unknow type!!!\n");
+				}
+
+			/* End of carbon */
+			}else if ( mols->atoms[i] == 2) 
+			{
+				if ( k == 1) {
+					mols->gaff_types[i] = O;
+					if ( verboseflag == 1)
+						printf("%i tipo O.\n", i);
+				}else{
+					flag = 0;
+					for (k = 0; k < 4; ++k)
+						if ( mols->atoms[vecinos[k]] == 4 )
+							flag = 1;
+
+					if ( flag == 1) {
+						mols->gaff_types[i] = OH;
+						if ( verboseflag == 1)
+							printf("%i tipo OH.\n", i);
+					}else{
+						mols->gaff_types[i] = OS;
+						if ( verboseflag == 1)
+							printf("%i tipo OS.\n", i);
+					}
+
+
+				}
+			/* End of oxygen */
+			}else if ( mols->atoms[i] == 4) {
+				if ( k > 1)
+					fprintf(stderr,"Warning: H bonded to many atoms.\n");
+
+				for (k = 0; k < 1; ++k) {
+					ewg = 0;
+					bondis = get_number_any_bond(mols[0], vecinos[k] + 1, 0);
+					if ( mols->atoms[vecinos[k]] == 1 ) {
+						ewg += get_number_bond_by_atom(mols[0], vecinos[k] + 1, 0, 3);
+						ewg += get_number_bond_by_atom(mols[0], vecinos[k] + 1, 0, 2);
+						ewg += get_number_bond_by_atom(mols[0], vecinos[k] + 1, 0, 6);
+						ewg += get_number_bond_by_atom(mols[0], vecinos[k] + 1, 0, 9);
+						ewg += get_number_bond_by_atom(mols[0], vecinos[k] + 1, 0, 8);
+						ewg += get_number_bond_by_atom(mols[0], vecinos[k] + 1, 0, 7);
+						if ( bondis == 4 && ewg == 0) {
+							mols->gaff_types[i] = HC;
+							if ( verboseflag == 1)
+								printf("%i tipo HC.\n", i);
+						}else if ( bondis == 4 && ewg == 1) {
+							mols->gaff_types[i] = H1;
+							if ( verboseflag == 1)
+								printf("%i tipo H1.\n", i);
+						}else if ( bondis == 4 && ewg == 2) {
+							mols->gaff_types[i] = H2;
+							if ( verboseflag == 1)
+								printf("%i tipo H2.\n", i);
+						}else if ( bondis == 4 && ewg == 3) {
+							mols->gaff_types[i] = H3;
+							if ( verboseflag == 1)
+								printf("%i tipo H3.\n", i);
+						}else if ( bondis == 3 && ewg == 1) {
+							mols->gaff_types[i] = H4;
+							if ( verboseflag == 1)
+								printf("%i tipo H4.\n", i);
+						}else if ( bondis == 3 && ewg == 2) {
+							mols->gaff_types[i] = H5;
+							if ( verboseflag == 1)
+								printf("%i tipo H5.\n", i);
+						}else if ( bondis == 5 && ewg == 4) {
+							mols->gaff_types[i] = HX;
+							if ( verboseflag == 1)
+								printf("%i tipo HX.\n", i);
+						}else{
+							mols->gaff_types[i] = HA;
+							if ( verboseflag == 1)
+								printf("%i tipo HA.\n", i);
+						}
+					}else if ( mols->atoms[vecinos[k]] == 2) {
+						mols->gaff_types[i] = HO;
+						if ( verboseflag == 1)
+							printf("%i tipo HO.\n", i);
+					}else if ( mols->atoms[vecinos[k]] == 3) {
+						mols->gaff_types[i] = HN;
+						if ( verboseflag == 1)
+							printf("%i tipo HN.\n", i);
+					}else if ( mols->atoms[vecinos[k]] == 5) {
+						mols->gaff_types[i] = HP;
+						if ( verboseflag == 1)
+							printf("%i tipo HP.\n", i);
+					}else if ( mols->atoms[vecinos[k]] == 6) {
+						mols->gaff_types[i] = HS;
+						if ( verboseflag == 1)
+							printf("%i tipo HS.\n", i);
+					}
+				}
+
+			}else if ( mols->atoms[i] == 6) {
+
+				if ( k == 1) {
+					mols->gaff_types[i] = S;
+					if ( verboseflag == 1)
+						printf("%i tipo S.\n", i);
+
+				}else if ( k == 5 || k == 6) {
+					mols->gaff_types[i] = S6;
+					if ( verboseflag == 1)
+						printf("%i tipo S6.\n", i);
+				}else if ( k == 2) {
+					flag = 0;
+					for (j = 0; j < 4; ++j)
+						if ( mols->atoms[vecinos[j]] == 4 )
+							flag = 1;
+					if ( flag == 1) {
+						mols->gaff_types[i] = SH;
+						if ( verboseflag == 1)
+							printf("%i tipo SH.\n", i);
+					}else if ( get_bonds(mols[0], i + 1, 2) > 0 || get_bonds(mols[0], i + 1, 3) > 0) {
+						mols->gaff_types[i] = S2;
+						if ( verboseflag == 1)
+							printf("%i tipo S2.\n", i);
+					}else{
+						mols->gaff_types[i] = SS;
+						if ( verboseflag == 1)
+							printf("%i tipo SS.\n", i);
+					}
+				}else if ( k == 3) {
+					ewg = get_bonds(mols[0], i + 1, 2);
+					ewg2 = get_bonds(mols[0], i + 1, 1);
+					if ( ewg > 0 && ewg2 > 0) {
+						ewg = 0;
+						for (k = 0; k < 4; ++k)
+							if ( vecinos2[k] == 1)
+								ewg += get_bonds(mols[0], vecinos[k] + 1, 2);
+						if ( ewg > 0) {
+							mols->gaff_types[i] = SX;
+							if ( verboseflag == 1)
+								printf("%i tipo SX.\n", i);
+						}else{
+							mols->gaff_types[i] = S4;
+							if ( verboseflag == 1)
+								printf("%i tipo S4.\n", i);
+						}
+					}else{
+						mols->gaff_types[i] = S4;
+						if ( verboseflag == 1)
+							printf("%i tipo S4.\n", i);
+					}
+				}else if ( k == 4) {
+					ewg = get_bonds(mols[0], i + 1, 2);
+					ewg2 = get_bonds(mols[0], i + 1, 1);
+					if ( ewg > 0 && ewg2 > 0) {
+						ewg = 0;
+						for (k = 0; k < 4; ++k)
+							if ( vecinos2[k] == 1)
+								ewg += get_bonds(mols[0], vecinos[k] + 1, 2);
+						if ( ewg > 0) {
+							mols->gaff_types[i] = SX;
+							if ( verboseflag == 1)
+								printf("%i tipo SY.\n", i);
+						}else{
+							mols->gaff_types[i] = S4;
+							if ( verboseflag == 1)
+								printf("%i tipo S6.\n", i);
+						}
+					}else{
+						mols->gaff_types[i] = S4;
+						if ( verboseflag == 1)
+							printf("%i tipo S6.\n", i);
+					}
+				}else{
+
+					if ( verboseflag == 1)
+						printf("Unkown type of S.\n");
+				}
+
+
+			}else if ( mols->atoms[i] == 5) {
+				if ( k == 1) {
+					mols->gaff_types[i] = P2;
+					if ( verboseflag == 1)
+						printf("%i tipo P2.\n", i);
+				}else if ( k == 2) {
+					ewg = get_bonds(mols[0], i + 1, 2);
+					ewg2 = get_bonds(mols[0], i + 1, 1);
+					if ( ewg > 0 && ewg2 > 0) {
+						ewg = 0;
+						for (k = 0; k < 4; ++k)
+							if ( vecinos2[k] == 1)
+								ewg += get_bonds(mols[0], vecinos[k] + 1, 2);
+						if ( ewg > 0) {
+
+							if ( mols->ringer[i] != 0) {
+								mols->gaff_types[i] = PC;
+								if ( verboseflag == 1)
+									printf("%i tipo PC.\n", i);
+							}else{
+								mols->gaff_types[i] = PE;
+								if ( verboseflag == 1)
+									printf("%i tipo PE.\n", i);
+							}
+						}else{
+							mols->gaff_types[i] = P2;
+							if ( verboseflag == 1)
+								printf("%i tipo P2.\n", i);
+						}
+					}else{
+						mols->gaff_types[i] = P2;
+						if ( verboseflag == 1)
+							printf("%i tipo P2.\n", i);
+					}
+				}else if ( k == 3) {
+					ewg = 0;
+					ewg += get_number_bond_by_atom(mols[0], i + 1, 2, 2);
+					ewg += get_number_bond_by_atom(mols[0], i + 1, 2, 6);
+					if ( ewg != 0) {
+						mols->gaff_types[i] = P4;
+						if ( verboseflag == 1)
+							printf("%i tipo P4.\n", i);
+					}else{
+						ewg = get_bonds(mols[0], i + 1, 2);
+						ewg2 = get_bonds(mols[0], i + 1, 1);
+						if ( ewg > 0 && ewg2 > 0) {
+							ewg = 0;
+							for (k = 0; k < 4; ++k)
+								if ( vecinos2[k] == 1)
+									ewg += get_bonds(mols[0], vecinos[k] + 1, 2);
+							if ( ewg > 0) {
+								mols->gaff_types[i] = PX;
+								if ( verboseflag == 1)
+									printf("%i tipo PX.\n", i);
+							}else{
+								mols->gaff_types[i] = P3;
+								if ( verboseflag == 1)
+									printf("%i tipo P3.\n", i);
+							}
+						}else{
+							mols->gaff_types[i] = P3;
+							if ( verboseflag == 1)
+								printf("%i tipo P3.\n", i);
+						}
+					}
+				}else if ( k == 4) {
+					ewg = get_bonds(mols[0], i + 1, 2);
+					ewg2 = get_bonds(mols[0], i + 1, 1);
+					if ( ewg > 0 && ewg2 > 0) {
+						ewg = 0;
+						for (k = 0; k < 4; ++k)
+							if ( vecinos2[k] == 1)
+								ewg += get_bonds(mols[0], vecinos[k] + 1, 2);
+						if ( ewg > 0) {
+							mols->gaff_types[i] = PY;
+							if ( verboseflag == 1)
+								printf("%i tipo PY.\n", i);
+						}else{
+							mols->gaff_types[i] = P5;
+							if ( verboseflag == 1)
+								printf("%i tipo P5.\n", i);
+						}
+					}else{
+						mols->gaff_types[i] = P5;
+						if ( verboseflag == 1)
+							printf("%i tipo P5.\n", i);
+					}
+				}else if ( k == 5 || k == 6) {
+					mols->gaff_types[i] = P5;
+					if ( verboseflag == 1)
+						printf("%i tipo P5.\n", i);
+				}else if ( verboseflag == 1)
+					printf("P Unknow type.\n");
+			}else if ( mols->atoms[i] == 10 ) {
+				mols->gaff_types[i] = F;
+				if ( verboseflag == 1)
+					printf("%i tipo F.\n", i);
+			}else if ( mols->atoms[i] == 9 ) {
+				mols->gaff_types[i] = CL;
+				if ( verboseflag == 1)
+					printf("%i tipo CL.\n", i);
+			}else if ( mols->atoms[i] == 8 ) {
+				mols->gaff_types[i] = BR;
+				if ( verboseflag == 1)
+					printf("%i tipo BR.\n", i);
+			}else if ( mols->atoms[i] == 7 ) {
+				mols->gaff_types[i] = I;
+				if ( verboseflag == 1)
+					printf("%i tipo I.\n", i);
+			}
+	} /* End of first loop */
+
+
+/* Another loop for N. I need carbonyl checks before typing amides*/
+/* Lazzy-crap(tm) technique */
+
+		for (i = 0; i < mols->n_atoms; ++i) 
+		{
+/* Get vecinos */
+			for (j = 0; j < mols->n_atoms; ++j) {
+				vecinos[j] = 0;
+				vecinos2[j] = 0;
+			}
+			k = 0;
+			for (j = 0; j < mols->n_bonds; ++j) {
+				if ( mols->bond_a1[j] == (i + 1)) {
+					vecinos[k] = mols->bond_a2[j] - 1;
+					vecinos2[k] = mols->bonds[j];
+					k++;
+				}else if ( mols->bond_a2[j] == (i + 1)) {
+					vecinos[k] = mols->bond_a1[j] - 1;
+					vecinos2[k] = mols->bonds[j];
+					k++;
+				}
+			}
+
+			if ( mols->atoms[i] == 3 ) {
+				if ( k == 1) {
+					mols->gaff_types[i] = N1;
+					if ( verboseflag == 1)
+						printf("%i tipo N1.\n", i);
+				}else if ( k == 2) {
+					ewg = get_bonds(mols[0], i + 1, 2);
+					if ( mols->aromatic[i] == 1) {
+						mols->gaff_types[i] = NB;
+						if ( verboseflag == 1)
+							printf("%i tipo NB.\n", i);
+					}else if ( get_bonds(mols[0], i + 1, 3)  > 0 || ewg == 2) {
+						mols->gaff_types[i] = N1;
+						if ( verboseflag == 1)
+							printf("%i tipo N1.\n", i);
+					}else{
+						ewg2 = get_bonds(mols[0], i + 1, 1);
+						if ( ewg > 0 && ewg2 > 0) {
+							ewg = 0;
+							for (k = 0; k < 4; ++k)
+								if ( vecinos2[k] == 1)
+									ewg += get_bonds(mols[0], vecinos[k] + 1, 2);
+							if ( ewg > 0) {
+								if ( mols->ringer[i] != 0) {
+									mols->gaff_types[i] = NC;
+									if ( verboseflag == 1)
+										printf("%i tipo NC.\n", i);
+								}else{
+									mols->gaff_types[i] = NE;
+									if ( verboseflag == 1)
+										printf("%i tipo NE.\n", i);
+								}
+							}else{
+								mols->gaff_types[i] = N2;
+								if ( verboseflag == 1)
+									printf("%i tipo N2.\n", i);
+							}
+						}else{
+							mols->gaff_types[i] = N2;
+							if ( verboseflag == 1)
+								printf("%i tipo N2.\n", i);
+						}
+					}
+				}else if ( k == 3) {
+					if ( mols->aromatic[i] == 1) {
+						mols->gaff_types[i] = NA;
+						if ( verboseflag == 1)
+							printf("%i tipo NA.\n", i);
+					}else{
+
+						flag2 = 0;
+						flag = 0;
+						flag3 = 0;
+						for ( j = 0; j < k; ++j) {
+							if ( mols->atoms[vecinos[j]] == 2 )
+								flag2++;
+							else if ( mols->gaff_types[vecinos[j]] == C)
+								flag = 1;
+							else if ( vecinos2[j] == 2 && (mols->gaff_types[vecinos[j]] == C || mols->atoms[vecinos[j]] == 3 || mols->atoms[vecinos[j]] == 1 ))
+								flag3++;
+						}
+
+						if ( flag2 == 2 && k == 3) {
+							mols->gaff_types[i] = NO;
+							if ( verboseflag == 1)
+								printf("%i tipo NO.\n", i);
+						}else{
+							if ( flag == 1) {
+								mols->gaff_types[i] = N;
+								if ( verboseflag == 1)
+									printf("%i tipo N.\n", i);
+							}else if ( flag3 == 1) {
+
+								mols->gaff_types[i] = NH;
+								if ( verboseflag == 1)
+									printf("%i tipo NH.\n", i);
+
+							}else{
+								mols->gaff_types[i] = N3;
+								if ( verboseflag == 1)
+									printf("%i tipo N3.\n", i);
+							}
+						}
+					}
+
+				}else if ( k == 4) {
+					mols->gaff_types[i] = N4;
+					if ( verboseflag == 1)
+						printf("%i tipo N4.\n", i);
+				}else if ( verboseflag == 1)
+					printf("N  Unknow type.\n");
+			}
+		}
+
+
+#ifdef DEBUG
+		for (j = 0; j < mols->n_atoms; ++j)
+			printf("%i - %i.\n", j, mols->gaff_types[j]);
+
+#endif
+
+	free(vecinos);
+	free(vecinos2);
+
+	*mymol = mols;
+
 }

@@ -878,6 +878,32 @@ int dump_pdb(MOL2 *mol)
 	return 0;
 }
 
+/**
+ 
+    @brief Dump only the ligand atoms of a MOL2 in PDB format to the default output
+    @author Alvaro Cortes Cabrera <alvaro.cortes@uah.es>
+    @param mol MOL2 with the molecule
+    @param out FILE handler output file
+    @return 0 on success
+ 
+ */
+
+int dump_pdb_to_file(MOL2 *mol, FILE *out)
+{
+        int i;
+
+        for (i = 0; i < mol->n_atoms; ++i) {
+
+                if ( mol->backbone[i] != 1)
+                        fprintf(out,"ATOM %6i  %2s  UNK     0    %8.3f%8.3f%8.3f\n", i + 1, elems[ mol->atoms[i] - 1], mol->x[i], mol->y[i], mol->z[i]);
+
+        }
+
+        fprintf(out,"TER\n");
+
+        return 0;
+}
+
 
 
 /**
@@ -904,6 +930,34 @@ int dump_pdb_conservative(MOL2 *mol)
 
         return 0;
 }
+
+/**
+ *
+ *  @brief Dump only the ligand atoms of a MOL2 in PDB format to the default output with
+ *        charges and radii and keeping the original names
+ *  @author Alvaro Cortes Cabrera <alvaro.cortes@uah.es>
+ *  @param mol MOL2 with the molecule
+ *  @param out FILE handler for output file
+ *  @return 0 on success
+ *
+ **/
+int dump_pdb_conservative_to_file(MOL2 *mol, FILE *out)
+{
+        int i;
+
+        for (i = 0; i < mol->n_atoms; ++i) {
+
+/*                if ( mol->backbone[i] != 1)*/
+                        fprintf(out,"ATOM %6i%3s  %3s     0    %8.3f%8.3f%8.3f  %1.2f%7.4f\n", i + 1, mol->atom_names[i], mol->res_names[i], mol->x[i], mol->y[i], mol->z[i], mol->radius[i],mol->pcharges[i]);
+
+        }
+
+        fprintf(out,"TER\n");
+
+        return 0;
+}
+
+
 
 /**
  *
@@ -1437,7 +1491,7 @@ int is_planar(MOL2 *mol, int i)
 
                 res = res / (mod1*mod2);
 
-/*>                printf("%f\n",res);*/
+/*                printf("\n%f\n\n",res);*/
 
                 if( fabs(res) < 0.1)
                  return 0;
@@ -1446,6 +1500,16 @@ int is_planar(MOL2 *mol, int i)
 }
 
 
+
+/*
+ *	Return:
+ *
+ *	5 if nitro
+ *	0 carboxylate
+ *	1 sulfate S(O)(O)(O)(O)
+ *	2 phosphate P(O)(O)(O)(O)
+ *
+ */
 int gaus_is_carboxylate(MOL2 *mol, int l)
 {
         int i = 0, nh = -1, no = 0;
@@ -1494,5 +1558,25 @@ int gaus_is_carboxylate(MOL2 *mol, int l)
         return val;
 }
 
+int dump_mol2_to_file(MOL2 *mol, FILE *out)
+{
+        int i;
+	char *elems[10] = { "C ", "O ", "N ", "H ", "P ", "S ", "I ", "Br", "Cl", "F " };
+	fprintf(out,"@<TRIPOS>MOLECULE\n");
+	fprintf(out,"%s\n",mol->comment);
+	fprintf(out,"%4i %4i %4i %4i %4i\n",mol->n_atoms, mol->n_bonds, 0, 0,0);
+	fprintf(out,"\n\n\n\n");
+	fprintf(out,"@<TRIPOS>ATOM\n");
 
+        for (i = 0; i < mol->n_atoms; ++i) {
+		fprintf(out,"%4i %10s %8.4f %8.4f %8.4f %-4s\n", i+1, mol->atom_names[i],  mol->x[i], mol->y[i], mol->z[i],mol->atom_types_sybyl[i]);
+        }
+	fprintf(out,"@<TRIPOS>BOND\n");
+        for (i = 0; i < mol->n_bonds; ++i) {
+                fprintf(out,"%4i %4i %4i %i\n",i+1, mol->bond_a1[i], mol->bond_a2[i], mol->bonds[i]);
+        }
+	fprintf(out,"\n");
+
+        return 0;
+}
 

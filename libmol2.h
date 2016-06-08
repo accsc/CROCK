@@ -91,7 +91,7 @@ typedef struct{
 int n_atoms;
 /** Number of bonds */
 int n_bonds;
-/** Comments. Not used */
+/** Comments. Not used in PDB */
 char *comment;  
 /** Global charge. Not used */
 int charges;
@@ -108,9 +108,13 @@ float *bond_dist;
 /** Atoms vector */
 int *atoms;   
 /** In ring flag for atoms */
-int *ringer;
+int *ringer; /* Deprecated */
 /** Aromatic flag for atoms */
 int *aromatic;
+/** New rings list */
+int **rings;
+/** New number of rings */
+int n_rings;
 /** Angles in the molecule. Atom i*/
 int *ia;
 /** Angles in the molecule. Atom j*/
@@ -200,7 +204,8 @@ int *res_type;
 char **res_names;
 /** Atom names */
 char **atom_names;
-
+/** Sybyl atom types */
+char **atom_types_sybyl;
 /** Conformers for the current molecule */
 CONFORMER *conformers;
 /** Number of conformers for the current molecule */

@@ -30,7 +30,7 @@
 #define beta 0.5
 #define gamma 2.0
 
-double get_simplex_energy(MOL2 *mol, float *simplex, MOL2 *template, int pocket);
+double get_simplex_energy(MOL2 *mol, float *simplex, MOL2 *template, int **type1, int **type2, int pocket);
 double get_simplex_energy_ingrid(MOL2 *mol, float *simplex, float ****grid, int *types, int **types2, float min_grid[3], float max_grid[3],int max_x, int max_y, int max_z, float spacing);
 
 
@@ -80,7 +80,7 @@ float gen_rand_float()
  *      @return 0 on success
  *
  */
-int go_simplex_go(int nvar, float simplex[7][7], double **energies_orig,  MOL2 *mymol, MOL2 *template, int pocket)
+int go_simplex_go(int nvar, float simplex[7][7], double **energies_orig,  MOL2 *mymol, MOL2 *template, int **types1, int **types2, int pocket)
 {
 
 	int iter = 0, mpts = 0;
@@ -157,7 +157,7 @@ int go_simplex_go(int nvar, float simplex[7][7], double **energies_orig,  MOL2 *
 		}
 
 		/* Energy of this new point */
-		energyr = get_simplex_energy(mymol, simplexr, template, pocket);
+		energyr = get_simplex_energy(mymol, simplexr, template, types1, types2, pocket);
 
 		if ( energyr <= energies[ilo]) { /* Energy better than the best point */
 
@@ -166,7 +166,7 @@ int go_simplex_go(int nvar, float simplex[7][7], double **energies_orig,  MOL2 *
 				simplexrr[j] = gamma * simplexr[j] + (1 - gamma) * pbar[j];
 
 			/* Get this new energy */
-			energyrr = get_simplex_energy(mymol, simplexrr, template, pocket);
+			energyrr = get_simplex_energy(mymol, simplexrr, template, types1, types2, pocket);
 
 			/* Oe oe oe oe! We are the best extrapolating. */
 			/* This extrapolation is better again that the best point  */
@@ -194,7 +194,7 @@ int go_simplex_go(int nvar, float simplex[7][7], double **energies_orig,  MOL2 *
 			for ( j = 0; j < nvar; ++j)
 				simplexrr[j] = beta * simplex[ihi][j] + (1 - beta ) * pbar[j];
 
-			energyrr = get_simplex_energy(mymol, simplexrr, template, pocket);
+			energyrr = get_simplex_energy(mymol, simplexrr, template, types1, types2, pocket);
 
 			if ( energyrr < energies[ihi] ) { /* Ok. We did it, that move worked.*/
 				for (j = 0; j < nvar; ++j)
@@ -209,7 +209,7 @@ int go_simplex_go(int nvar, float simplex[7][7], double **energies_orig,  MOL2 *
 							simplexr[j] = 0.5 * ( simplex[i][j] + simplex[ilo][j] );
 							simplex[i][j] = simplexr[j];
 						}
-						energies[i] = get_simplex_energy(mymol, simplexr, template, pocket); /* Should be better */
+						energies[i] = get_simplex_energy(mymol, simplexr, template, types1, types2, pocket); /* Should be better */
 					}
 				}
 
@@ -252,7 +252,7 @@ int go_simplex_go(int nvar, float simplex[7][7], double **energies_orig,  MOL2 *
  *      @param spacing Grid spacing
  *      @return Grid energy
  */
-double get_simplex_energy(MOL2 *mol, float *simplex, MOL2 *template, int pocket)
+double get_simplex_energy(MOL2 *mol, float *simplex, MOL2 *template, int **types1, int **types2, int pocket)
 {
 
 	int i = 0, j = 0, real_atoms = 0, l = 0;
@@ -380,7 +380,7 @@ double get_simplex_energy(MOL2 *mol, float *simplex, MOL2 *template, int pocket)
 
         energy += -(ab / (aa+bb-ab));*/
 	energy = get_volumen_intersection(template, &mol, pocket, 0);
-	energy += get_color_intersection(template, &mol, pocket, 0);
+	energy += get_color_intersection(template, &mol, types1, types2, pocket, 0);
 
 /*	fprintf(stderr,"Evaluating energy: %f\n",energy);*/
 

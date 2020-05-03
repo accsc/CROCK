@@ -200,7 +200,7 @@ int getCentroid3(float * xs, float * ys, float * zs, float * qs, int n_atoms, do
 }
 
 /**
- *      @brief Get the forth and fiveth centroids for ElectroShape method
+ *      @brief Get the forth and fifth centroids for ElectroShape method
  *      @author Javier Klett <jklett@cbm.uam.es>
  *      
  *      @param xs Vector of X coordinates 

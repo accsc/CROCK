@@ -17,10 +17,14 @@
  *
  */
 
-#define _CROCK_VERSION "rev6/Jun2015"
+#define _CROCK_VERSION "rev7/May2018"
 
 
 /**
+ 	Rev 7 - May 2018
+
+	  Improved handling of conformers
+
         Rev 6 - June 2016
  
           MOL2 input format support (default now, no more PDB)
@@ -30,10 +34,6 @@
 	  Fixed and completed color force field: 
              More Mills-like. r=0.7 with TanimotoColor from ROCS 3.2
              Implemented: Rings, hydrophobic (partially), anion and cation (all explicitly)
-          TO DO next release:
-	   Pockets from cGRILL are broken currently
-           All conformers are dumped as independent molecules (get best only) 
-           OpenMP implementation of the main conformers loop
 
         Rev 5 - December 2015
 
@@ -151,6 +151,8 @@ char *argv[];
 	float **x = NULL, **y = NULL, **z = NULL;
         float *xd = NULL, *yd = NULL, *zd = NULL;
 	float **scores_list = NULL, tmp_es = 0;
+	char **conformers_dictionary = NULL;
+	int *confs_index = NULL, unique_molecules = 0, *confs_already = NULL, flag_uniq = 0;
 	char date_text[1024];
 	time_t now;
 	struct tm *t;
@@ -224,11 +226,12 @@ char *argv[];
                         { "force",       no_argument,         0,                   'f' },
                         { "dx",          no_argument,         0,                   'x' },
                         { "frame",       no_argument,         0,                   'w' },
+                        { "unique",      no_argument,         0,                   'u' },
                         { 0,             0,                   0,                   0   }
                 };
                 int option_index = 0;
 
-                c_arg = getopt_long(argc, argv, "r:d:sbfxwo:t:m:",
+                c_arg = getopt_long(argc, argv, "r:d:sbfxwo:t:m:u",
                                 long_options, &option_index);
                 if (c_arg == -1)
                         break;
@@ -243,6 +246,10 @@ char *argv[];
                                 printf(" with arg %s", optarg);
                         printf("\n");
                         break;
+
+		case 'u':
+			flag_uniq = 1;
+			break;
 
                 case 'r':
 			ref_filename = optarg;
@@ -300,7 +307,7 @@ char *argv[];
         if( output_base == NULL || ref_filename == NULL || db_filename == NULL)
         {
 		fprintf(stderr,"Usage: %s <params>\n",argv[0]);
-		fprintf(stderr,"\t-r or --ref template.pdb -> Rigid molecule\n");
+		fprintf(stderr,"\t-r or --ref template.mol2 -> Rigid molecule\n");
 		fprintf(stderr,"\t-d or --database candidate.mol2 -> Molecule/database to superimpose\n");
 		fprintf(stderr,"\t-o or --output <base for file names> -> Results\n");
 		fprintf(stderr,"\t-b or --bfgs BFGS optimization\n");
@@ -828,18 +835,44 @@ char *argv[];
 
 
 	scores_list = (float **) calloc(sizeof(float *), ndb);
+        conformers_dictionary  = (char **) calloc(sizeof(char *), ndb);
+
         for( k = 0; k < ndb; k++)
         {
 		scores_list[k] = (float *) calloc(sizeof(float),10);
 		scores_list[k][3] = k;
+		conformers_dictionary[k] = (char *) calloc(sizeof(char),1025);
         }
+
+	confs_index = (int *) calloc(sizeof(int), ndb);
+	confs_already = (int *) calloc(sizeof(int), ndb);
+
+	for ( ll = 0; ll < ndb; ++ll)
+        {
+		lig_b = database[ll];
+		for( i = 0; i < unique_molecules; i++)
+		{
+			if( strcmp(conformers_dictionary[i],lig_b->comment) == 0)
+			  break;
+		}
+		if( i != unique_molecules)
+		{
+			confs_index[ll] = i;
+		}else{
+			strncpy(conformers_dictionary[unique_molecules],lig_b->comment,1024);
+			confs_index[ll] = unique_molecules;
+			unique_molecules++;
+		}
+		#ifdef DEBUG
+		fprintf(stderr,"Conf %i - indx %i - name %s\n",ll,i,lig_b->comment);
+		#endif
+	}
 
 	/* Flexibility issue is handled before with pre-computation of conformers */
         /* From rev6 on, a multi-MOL2 database was used as input */
         for ( ll = 0; ll < ndb; ++ll)  
         {
 		lig_b = database[ll];
-	
 		bestval = 0;
 		bestval1 = 0;
 		bestval2 = 0;
@@ -1194,17 +1227,31 @@ char *argv[];
 	fprintf(output_list,"#MolIdx,Molname,Tanimoto_Combo,Tanimoto_Color,Tanimoto_Shape,Tversky_Combo_ref,Tversky_Color_ref,Tversky_Shape_ref,Tversky_Combo,Tversky_Color,Tversky_Shape\n");
 	for( j = 0; j < ndb; j++)
 	{
+		if( flag_uniq == 0 || confs_already[confs_index[(int) scores_list[j][3]]] == 0)
+		{
 		fprintf(output_list,"%i,%s,%f,%f,%f,%f,%f,%f,%f,%f,%f\n",((int) scores_list[j][3])+1,
 			database[(int) scores_list[j][3]]->comment,scores_list[j][0],scores_list[j][1],
 			scores_list[j][2],scores_list[j][4],scores_list[j][5],scores_list[j][6],
 			scores_list[j][7],scores_list[j][8], scores_list[j][9]);
+		confs_already[confs_index[(int) scores_list[j][3]]] = 1;
+		}
 	}
 	fflush(output_list);
+
+        for( j = 0; j < ndb; j++)
+        {
+		confs_already[j] = 0;
+	}
 
 
 	/* Print max results or all to PDB file */
 	for( ll = 0; ll < MIN(max_output,ndb); ll++)
 	{
+		if( !(flag_uniq == 0 || confs_already[confs_index[(int) scores_list[ll][3]]] == 0))
+			continue;
+
+		confs_already[confs_index[(int) scores_list[ll][3]]] = 1;
+
 		/* Restore best coordinates */
 	        lig_b = database[(int) scores_list[ll][3]];
 	        for( j = 0; j < lig_b->n_atoms; j++)
@@ -1278,7 +1325,11 @@ char *argv[];
 		free(y[i]);
 		free(z[i]);
 		free(scores_list[i]);
+		free(conformers_dictionary[i]);
 	}
+	free(conformers_dictionary);
+	free(confs_index);
+	free(confs_already);
 	free(scores_list);
 	free(x); free(y); free(z);
 
@@ -1301,10 +1352,7 @@ char *argv[];
 
 void advertise()
 {
-        fprintf(stderr, "CROCK %s Another program to superimpose ligands using gaussians\n",_CROCK_VERSION);
-        fprintf(stderr, "Brought to you by Department of Pharmacology UAH:\n\n ");
+        fprintf(stderr, "CROCK %s A program to superimpose ligands using gaussians\n",_CROCK_VERSION);
         fprintf(stderr, "\tAlvaro Cortes Cabrera <alvarocortesc@gmail.com>\n");
-        fprintf(stderr, "\tFederico Gago <federico.gago@uah.es>\n\n");
-        fprintf(stderr, "Have fun!\n\n");
 }
 

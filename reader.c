@@ -1942,7 +1942,7 @@ int MultiMOL2_reader(MOL2 ***mymol, char *finput_name)
 			fgets(line, MAX_BUFFER, input); /* Title should be processed */
 			mols->comment = (char *) calloc(sizeof(char),1024);
 			line[strlen(line)-1] = '\0';
-			strncpy(mols->comment,line,49);
+			strncpy(mols->comment,line,1023);
 
 			fgets(line, MAX_BUFFER, input); /* Natoms and nbonds */
 			sscanf(line,"%d %d %*d %*d %*d",&natoms,&nbonds);

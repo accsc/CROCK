@@ -21,7 +21,7 @@
 
 
 /**
-        Rev 8 - February 2025
+        Rev 9 - February 2025
     
           Improve VS capabilities (skip MOL2 output + additional options)
           Fixed several critical bugs in the optimization block

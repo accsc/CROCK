@@ -1870,12 +1870,14 @@ int update_default_conformer(MOL2 **mymol)
 	return 0;
 }
 
-int MultiMOL2_reader(MOL2 ***mymol, char *finput_name)
+
+int MultiMOL2_reader(MOL2 ***mymol, char *finput_name, int zip_flag)
 {
 
 	MOL2 *mols = NULL;
-	char *line = NULL;
+	char *line = NULL, *rline = NULL;
 	FILE *input = NULL;
+    gzFile *gz_input = NULL;
 	MOL2 **mmol = NULL;
 	int nmols = 0, current_mol = 0, state = -1;
 	int natoms = 0, nbonds = 0, current_atom =0, current_bond = 0;
@@ -1891,34 +1893,76 @@ int MultiMOL2_reader(MOL2 ***mymol, char *finput_name)
         char myz[12];
         char tmp_type[12];
 
-        if ( (input = fopen(finput_name, "r")) == NULL) {
-                fprintf(stderr, "Error. Cant open file %s.\n", finput_name);
-                fflush(stderr);
-                return(-1);
+        if(zip_flag == 0)
+        {
+            if ( (input = fopen(finput_name, "r")) == NULL) {
+                    fprintf(stderr, "Error. Cant open file %s.\n", finput_name);
+                    fflush(stderr);
+                    return(-1);
+            }
+        }else{
+            if ( (gz_input = gzopen(finput_name, "r")) == NULL) {
+                    fprintf(stderr, "Error. Cant open gzipped file %s.\n", finput_name);
+                    fflush(stderr);
+                    return(-1);
+            }
         }
-
-
         if ( (line = (char*)calloc(1, MAX_BUFFER + 2)) == NULL) {
-                fprintf(stderr, "Error. Cant al memory.\n");
+                fprintf(stderr, "Error. Cant allocate memory.\n");
                 fflush(stderr);
-		fclose(input);
+
+                if(zip_flag == 0)
+		            fclose(input);
+                else
+                    gzclose(input);
+
                 return(-2);
         }
 
-	/* @<TRIPOS>MOLECULE */
-	while ( fgets(line, MAX_BUFFER, input))
-	{
-		if( line[0] == '@' && line[1] == '<' && line[9] == 'M' && line[10] == 'O' && line[11] == 'L')
-		{
-			++nmols;
-		}
-	}
+        if ( (rline = (char*)calloc(1, MAX_BUFFER + 2)) == NULL) {
+                fprintf(stderr, "Error. Cant allocate memory.\n");
+                fflush(stderr);
 
-	#ifdef DEBUG
+                if(zip_flag == 0)
+                    fclose(input);
+                else
+                    gzclose(input);
+
+                free(line);
+                return(-2);
+        }
+
+
+	/* @<TRIPOS>MOLECULE */
+    if (zip_flag == 0)
+    {
+    	while ( fgets(line, MAX_BUFFER, input))
+    	{
+    		if( line[0] == '@' && line[1] == '<' && line[9] == 'M' && line[10] == 'O' && line[11] == 'L')
+    		{
+    			++nmols;
+    		}
+    	}
+    }else{
+
+        while ( gzgets(gz_input, line, MAX_BUFFER))
+        {
+            if( line[0] == '@' && line[1] == '<' && line[9] == 'M' && line[10] == 'O' && line[11] == 'L')
+            {
+                ++nmols;
+            }
+        }
+    }
+
+	/*#ifdef DEBUG*/
 		fprintf(stderr,"Reading %i molecules from the database\n",nmols);
 		fflush(stderr);
-	#endif
-	rewind(input);
+	/*#endif*/
+
+    if( zip_flag == 0)
+    	rewind(input);
+    else
+        gzrewind(gz_input);
 	
 	mmol = *mymol;
 
@@ -1931,20 +1975,31 @@ int MultiMOL2_reader(MOL2 ***mymol, char *finput_name)
         *mymol = mmol;
 	mols = mmol[0];
 
-        while ( fgets(line, MAX_BUFFER, input))
-        {
+    do{
+    if (zip_flag == 0)
+        rline = fgets(line, MAX_BUFFER, input);
+    else
+        rline = gzgets(gz_input, line, MAX_BUFFER);
+
+
                 if( line[0] == '@' && line[1] == '<' && line[9] == 'M' && line[10] == 'O' && line[11] == 'L')
                 {
 			++current_mol;
 			current_atom = 0; current_bond = 0;
 			mols = mmol[current_mol-1];
 			state = -1;
-			fgets(line, MAX_BUFFER, input); /* Title should be processed */
+            if (zip_flag == 0)
+     			fgets(line, MAX_BUFFER, input); /* Title should be processed */
+            else
+                gzgets(gz_input, line, MAX_BUFFER);
 			mols->comment = (char *) calloc(sizeof(char),1024);
 			line[strlen(line)-1] = '\0';
 			strncpy(mols->comment,line,1023);
 
-			fgets(line, MAX_BUFFER, input); /* Natoms and nbonds */
+            if( zip_flag == 0)
+			     fgets(line, MAX_BUFFER, input); /* Natoms and nbonds */
+            else
+                 gzgets(gz_input, line, MAX_BUFFER);
 			sscanf(line,"%d %d %*d %*d %*d",&natoms,&nbonds);
 			#ifdef DEBUG
 				fprintf(stderr,"Reading %i atoms and %i bonds\n",natoms,nbonds);
@@ -2125,10 +2180,15 @@ int MultiMOL2_reader(MOL2 ***mymol, char *finput_name)
 
 		}
 
-        }
+        }while(rline != NULL);
 
-	fclose(input);
+    if( zip_flag == 0)
+    	fclose(input);
+    else
+        gzclose(input);
+
 	free(line);
+	free(rline);
 	return nmols;
 }
 /**

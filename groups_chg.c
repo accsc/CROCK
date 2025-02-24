@@ -18,7 +18,7 @@
  */
 
 
-int detect_groups_heruistic(MOL2 *mol, int ***mytypes)
+int detect_groups_heuristic(MOL2 *mol, int ***mytypes)
 {
 
 	int i = 0, j = 0, k = 0, c = 0, m = 0, n = 0, l = 0, nh =0;

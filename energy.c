@@ -1260,8 +1260,8 @@ void grad_to_rigid(MOL2 *mol, float force[3], float torque[3])
 	torque[1] = 0.0f;
 	torque[2] = 0.0f;
 	force[0] = 0.0f;
-	force[0] = 0.0f;
-	force[0] = 0.0f;
+	force[1] = 0.0f;
+	force[2] = 0.0f;
 
 	com[0] = com[1] = com[2] = 0.0f;
 	for ( i = 0; i < mol->n_atoms; ++i) {

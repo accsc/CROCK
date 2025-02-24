@@ -494,7 +494,7 @@ int go_simplex_go_ingrid(int nvar, float simplex[7][7], double **energies_orig, 
 
 		/* Initialize */
 		for (i = 0; i < nvar; ++i)
-			pbar[j] = 0;
+			pbar[i] = 0;
 
 
 		/* Sum over vars of simplex to compute the average vector */
@@ -505,7 +505,8 @@ int go_simplex_go_ingrid(int nvar, float simplex[7][7], double **energies_orig, 
 		}
 
 		for ( i = 0; i < nvar; ++i) {
-			pbar[i] = pbar[i] / (float)nvar;                                /* Average vector finished */
+			/*pbar[i] = pbar[i] / (float)nvar;*/                              
+			pbar[i] = pbar[i] / (float) mpts;                                /* Average vector finished */
 			simplexr[i] = (1 + alpha) * pbar[i] - alpha * simplex[ihi][i];  /* Extrapolate by factor alpha to construct the reflection */
 		}
 

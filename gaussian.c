@@ -72,7 +72,8 @@ void gaussian_color_add_grid_forces(MOL2 **mymol, float ****grids, int **types, 
 		return;
 
         for ( i = 0; i < real_atoms; ++i) 
-	{
+	    {
+                e1 = 0.0f;
                 energy = 0.0f;
                 energy2 = 0.0f;
 
@@ -113,11 +114,11 @@ void gaussian_color_add_grid_forces(MOL2 **mymol, float ****grids, int **types, 
                                         tmpe += p0u * p1v * p0w * grids[kpot][ w1 ][ v0 ][ u1 ];
                                         tmpe += p1u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u0 ];
                                         tmpe += p0u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u1 ];
-                                        if( tmpe < e1);
-					{
-					 bestpot = kpot;
+                                        if( tmpe < e1)
+					                    {
+                     					 bestpot = kpot;
                                          e1 = tmpe;
-					}
+					                    }
                                 }
                         }
 
@@ -1624,6 +1625,7 @@ float get_color_volume_intersection_fromgrid(MOL2 *mol, float ****grids, int **t
                         u1  = (u0 = (int)(u = (z - zd) / spacing)) + 1;
                         p1u = 1.0L - (p0u = u - (float)u0);
 
+            e1 = 0;
 			for( l = 0; l < 5; l++)
 			{
 				tmpe = 0.0f;
@@ -1638,7 +1640,7 @@ float get_color_volume_intersection_fromgrid(MOL2 *mol, float ****grids, int **t
 		                        tmpe += p0u * p1v * p0w * grids[kpot][ w1 ][ v0 ][ u1 ];
 		                        tmpe += p1u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u0 ];
 		                        tmpe += p0u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u1 ];
-					if( tmpe < e1);
+					if( tmpe < e1)
 					 e1 = tmpe;
 				}
 			}
@@ -1648,6 +1650,7 @@ float get_color_volume_intersection_fromgrid(MOL2 *mol, float ****grids, int **t
 
 	for( i = 0; i < mol->n_rings; i++)
 	{
+            e1 = 0;
 	        com[0] = com[1] = com[2] = 0.0f;
 	        for( l = 0; l < mol->rings[i][0]; l++)
 	        {
@@ -1695,7 +1698,6 @@ float get_color_volume_intersection_fromgrid(MOL2 *mol, float ****grids, int **t
 			tmpe += p0u * p1v * p0w * grids[kpot][ w1 ][ v0 ][ u1 ];
 			tmpe += p1u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u0 ];
 			tmpe += p0u * p0v * p0w * grids[kpot][ w1 ][ v1 ][ u1 ];
-                        if( tmpe < e1);
                            e1 = tmpe;
                 }
                 energy += e1;
